@@ -90,6 +90,7 @@ API 概览
 - 进度追踪：`docs/STATUS.md`
 - 日志/诊断说明：`docs/LOGS_DIAGNOSTICS.md`
 - 日志配置：在 `config/settings*.toml` 的 `[logging]` 段配置 `level/file/console`；日志位于 `logs/` 目录（默认 RollingFile + 控制台）。
+- API 验证：`docs/API_TESTING.md`（Postman 与 requests 脚本）
 
 回归脚本
 
@@ -98,6 +99,11 @@ API 概览
   python scripts/run_smoke.py --config examples/config_csp_spv_us.json
   ```
   该脚本会加载配置、运行一次回测，并校验是否产生交易/决策，适合在 CI 或定期回归时使用。
+- API Smoke：
+  ```bash
+  python scripts/run_api_smoke.py --config examples/config_csp_spv_us.json --base http://127.0.0.1:8000
+  ```
+  需要先启动 API 与 Worker。脚本会依次调用 health/validate/backtests/status/artifacts，超时或失败会返回非零退出码。
 
 说明
 
