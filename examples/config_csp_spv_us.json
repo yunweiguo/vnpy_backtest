@@ -20,6 +20,6 @@
   "entry": {
     "liquidity": {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08}
   },
-  "backtest": {"start": "2024-01-01", "end": "2024-12-31"}
+  "backtest": {"start": "2024-01-01", "end": "2024-06-30"}
 }
 

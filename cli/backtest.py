@@ -178,9 +178,43 @@ def cmd_vnpy_run(args: argparse.Namespace) -> None:
         print(f"vn.py 回测失败：{exc}", file=sys.stderr)
         raise
 
+    run_id = args.run_id or str(uuid.uuid4())
+    settings = load_settings()
+
+    chart_paths: List[Path] = []
+    if not args.no_save:
+        chart_paths = save_artifacts(run_id, result, settings.artifacts_root)
+        artifacts_msg: str | None = str(Path(settings.artifacts_root) / run_id)
+    else:
+        artifacts_msg = None
+
     summary = result.get("summary", {})
+    trades = result.get("trades", [])
+
     print("=== vn.py Summary ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    show_count = args.trades if args.trades is not None else 10
+    if trades:
+        subset = trades[-show_count:] if show_count > 0 else trades
+        print(f"\n=== Trades (latest {len(subset)} of {len(trades)}) ===")
+        for trade in subset:
+            net = "-" if trade["net_credit"] is None else f"{trade['net_credit']:.2f}"
+            pnl = "-" if trade["pnl"] is None else f"{trade['pnl']:.2f}"
+            print(f"{trade['date']} {trade['symbol']} {trade['action']} {trade['kind']} net={net} pnl={pnl}")
+    else:
+        print("\n=== Trades ===\n(无交易记录)")
+
+    print("\n=== Output ===")
+    print(f"run_id: {run_id}")
+    if artifacts_msg:
+        print(f"已写入产物目录: {artifacts_msg}")
+        if chart_paths:
+            print("图表:")
+            for path in chart_paths:
+                print(f"  - {path}")
+    else:
+        print("未写入产物 (--no-save 模式)")
 
 
 def _print_response(resp: requests.Response) -> None:
@@ -230,6 +264,9 @@ def main(argv: list[str] | None = None) -> None:
 
     vnpy_run = sub.add_parser("vnpy-run", help="通过 vn.py BacktestingEngine 执行回测")
     vnpy_run.add_argument("config", help="配置文件路径 (JSON)")
+    vnpy_run.add_argument("--run-id", help="自定义 run_id")
+    vnpy_run.add_argument("--no-save", action="store_true", help="仅打印结果，不写入 artifacts")
+    vnpy_run.add_argument("--trades", type=int, default=10, help="展示的交易条数，默认 10 条 (按时间倒序)")
     vnpy_run.set_defaults(func=cmd_vnpy_run)
 
     args = parser.parse_args(argv)

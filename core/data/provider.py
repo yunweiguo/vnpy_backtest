@@ -90,10 +90,7 @@ class MySQLProvider:
             """
         )
         tz = tz_for_market(market)
-        t0_ms = local_midnight_to_utc_ms(start_local, tz)
-        t1_ms = local_midnight_to_utc_ms(add_days(end_local, 1), tz)
-        # Convert to seconds (TIMESTAMP seconds)
-        params = {"symbol": symbol, "t0": t0_ms // 1000, "t1": t1_ms // 1000}
+        params = {"symbol": symbol, "t0": start_local , "t1": add_days(end_local, 1)}
         with self._eng_stock.connect() as conn:
             df = pd.read_sql(sql, conn, params=params)
         if df.empty:
