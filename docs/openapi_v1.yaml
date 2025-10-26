@@ -1,0 +1,556 @@
+
+openapi: 3.0.3
+info:
+  title: Options Backtest API
+  description: >
+    API-first specification for the options backtesting platform (vn.py runtime).
+    Parameters come via JSON; YAML is only for export/import convenience.
+    All inputs normalize to the same internal schema before execution.
+  version: "v1"
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: https://staging.api.example.com/v1
+    description: Staging
+tags:
+  - name: Backtests
+    description: Create, inspect and manage backtest runs
+  - name: Reference
+    description: Defaults, presets, schema helpers
+  - name: Health
+    description: Service health
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+  /strategies/validate:
+    post:
+      tags: [Reference]
+      summary: Validate and normalize a strategy config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '200':
+          description: Normalized config with warnings/errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  normalized_config: {$ref: '#/components/schemas/Config'}
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiWarning'
+                  errors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiError'
+                  fingerprint:
+                    type: string
+                    description: SHA-256 of normalized config for reproducibility
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+  /backtests:
+    post:
+      tags: [Backtests]
+      summary: Create a backtest run
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+          description: Prevent duplicate submissions; same body + key returns same run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '201':
+          description: Backtest created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestCreateResponse'
+        '400':
+          description: Invalid config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+  /backtests/{run_id}:
+    get:
+      tags: [Backtests]
+      summary: Get backtest status and metadata
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Backtest status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BacktestStatusResponse'
+        '404':
+          description: Not found
+  /backtests/{run_id}/artifacts:
+    get:
+      tags: [Backtests]
+      summary: List artifacts of a completed run
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Artifact list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactList'
+        '404':
+          description: Not found
+  /backtests/{run_id}/cancel:
+    post:
+      tags: [Backtests]
+      summary: Cancel a running backtest
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Cancel requested
+        '404':
+          description: Not found
+  /reference/defaults:
+    get:
+      tags: [Reference]
+      summary: Get default thresholds and recommended ranges
+      responses:
+        '200':
+          description: Defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefaultsPayload'
+  /reference/resolve-profile:
+    post:
+      tags: [Reference]
+      summary: Expand preset and user overrides to a concrete config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preset:
+                  type: string
+                  enum: [conservative, balanced, aggressive]
+                user_overrides:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Resolved config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  normalized_config:
+                    $ref: '#/components/schemas/Config'
+                  warnings:
+                    type: array
+                    items: {$ref:'#/components/schemas/ApiWarning'}
+                  fingerprint:
+                    type: string
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    ApiWarning:
+      type: object
+      properties:
+        level: { type: string, example: info }
+        path:  { type: string, example: selector.short_delta }
+        code:  { type: string, example: SNAP_APPLIED }
+        message: { type: string }
+    ApiError:
+      type: object
+      properties:
+        path:  { type: string, nullable: true }
+        code:  { type: string, example: VALIDATION_ERROR }
+        message: { type: string }
+    ApiErrorResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ApiError' }
+
+    StrategyMeta:
+      type: object
+      required: [id, mode, market, timeframe]
+      additionalProperties: false
+      properties:
+        id:      { type: string, description: Strategy ID }
+        label:   { type: string, nullable: true }
+        mode:    { type: string, enum: [fixed_contract, symbol_selector] }
+        market:  { type: string, enum: [US, HK] }
+        symbols:
+          type: array
+          items: { type: string }
+          nullable: true
+        timeframe: { type: string, enum: [1m, 5m, 1h, 1d] }
+        trading_calendar: { type: string, example: XNYS, nullable: true }
+
+    LiquidityGate:
+      type: object
+      additionalProperties: false
+      properties:
+        min_oi:         { type: integer, default: 500 }
+        min_volume:     { type: integer, default: 100 }
+        max_spread_pct: { type: number, format: float, default: 0.08 }
+
+    EventGate:
+      type: object
+      additionalProperties: false
+      properties:
+        avoid_earnings: { type: boolean, default: true }
+        avoid_macro:    { type: boolean, default: false }
+
+    RiskGate:
+      type: object
+      additionalProperties: false
+      properties:
+        iv_rank_max: { type: integer, nullable: true, default: 80 }
+        price_filter:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            min: { type: number }
+            max: { type: number }
+
+    EntrySignals:
+      type: object
+      additionalProperties: false
+      properties:
+        trend: { type: string, enum: [breakout_or_ma, none], default: breakout_or_ma }
+        allow_event_play: { type: boolean, default: false }
+
+    Entry:
+      type: object
+      additionalProperties: false
+      properties:
+        liquidity: { $ref: '#/components/schemas/LiquidityGate' }
+        event_gate: { $ref: '#/components/schemas/EventGate' }
+        risk_gate:  { $ref: '#/components/schemas/RiskGate' }
+        signals:    { $ref: '#/components/schemas/EntrySignals' }
+
+    SelectorCfg:
+      type: object
+      additionalProperties: false
+      properties:
+        target_dte: { type: string, example: 30-60 }
+        strike_rule: { type: string, enum: [atm, slight_itm, by_delta], default: by_delta }
+        short_delta: { type: string, example: 0.18-0.25, nullable: true }
+        wing_delta:  { type: string, example: 0.05-0.10, nullable: true }
+        width:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            min: { type: number }
+            max: { type: number }
+        iv_rank_min: { type: integer, nullable: true, example: 50 }
+        min_credit_of_width: { type: number, nullable: true, example: 0.33 }
+        candidate_top_k: { type: integer, default: 3 }
+        tie_breakers:
+          type: array
+          items: { type: string }
+          example: ["spread","oi","dte","round_strike"]
+
+    RollPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean, default: true }
+        manage_at_dte_lte: { type: integer, default: 21 }
+        roll_to_dte: { type: string, example: 30-60 }
+        threatened_side_only: { type: boolean, default: true }
+        keep_width: { type: boolean, default: true }
+        delta_retarget:
+          type: object
+          additionalProperties: false
+          properties:
+            put:  { type: string, example: 0.16-0.25 }
+            call: { type: string, example: 0.20-0.30 }
+        min_expected_return_annualized: { type: number, format: float, default: 0.15 }
+        max_roll_debit: { type: number, nullable: true, example: 0.30 }
+        liquidity_gate: { $ref: '#/components/schemas/LiquidityGate' }
+        events:
+          type: object
+          additionalProperties: false
+          properties:
+            avoid_earnings: { type: boolean, default: true }
+            ex_div_assignment_check: { type: boolean, default: true }
+
+    TPSLCredit:
+      type: object
+      additionalProperties: false
+      properties:
+        tp_of_max:
+          type: array
+          items: { type: number }
+          example: [0.25, 0.5]
+        sl_x_credit:
+          type: array
+          items: { type: number }
+          example: [1.5, 2.0]
+
+    TPSLDebit:
+      type: object
+      additionalProperties: false
+      properties:
+        tp:
+          type: array
+          items: { type: number }
+          example: [0.5, 1.0]
+        sl:
+          type: array
+          items: { type: number }
+          example: [0.4, 0.6]
+
+    ExitPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        hard_exit_dte_lte: { type: integer, default: 7 }
+        tp_sl:
+          type: object
+          additionalProperties: false
+          properties:
+            credit: { $ref: '#/components/schemas/TPSLCredit' }
+            debit:  { $ref: '#/components/schemas/TPSLDebit' }
+        trailing_after_profit:
+          type: object
+          additionalProperties: false
+          properties:
+            trigger:  { type: number, example: 0.8 }
+            drawdown: { type: number, example: 0.2 }
+        structure:
+          type: object
+          additionalProperties: false
+          properties:
+            max_loss_hit_pct: { type: number, example: 0.85 }
+        portfolio:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            max_intraday_loss_pct: { type: number, example: 0.02 }
+            max_drawdown_pct: { type: number, example: 0.10 }
+        liquidity_fallback_exit: { type: boolean, default: true }
+
+    FillGuard:
+      type: object
+      additionalProperties: false
+      properties:
+        max_spread_pct: { type: number, example: 0.12 }
+        min_oi: { type: integer, example: 100 }
+        min_volume: { type: integer, example: 10 }
+
+    Retry:
+      type: object
+      additionalProperties: false
+      properties:
+        max_attempts: { type: integer, example: 2 }
+        backoff_sec: { type: integer, example: 1 }
+
+    Execution:
+      type: object
+      additionalProperties: false
+      properties:
+        combo_order: { type: boolean, default: true }
+        price_preference: { type: string, enum: [mid, bid, ask], default: mid }
+        price_offset_bps: { type: integer, default: 5 }
+        retry: { $ref: '#/components/schemas/Retry' }
+        fill_guard: { $ref: '#/components/schemas/FillGuard' }
+        reject_if_guard_fails: { type: boolean, default: true }
+
+    Fees:
+      type: object
+      additionalProperties: false
+      properties:
+        commission_per_contract: { type: number, example: 0.65 }
+        exchange_fees_per_contract: { type: number, example: 0.15 }
+        exercise_assignment_fee: { type: number, example: 5.0 }
+
+    Slippage:
+      type: object
+      additionalProperties: false
+      properties:
+        model: { type: string, enum: [mid_bps, fraction_spread, fixed], default: mid_bps }
+        mid_bps: { type: integer, default: 5 }
+        fraction_spread: { type: number, default: 0.25 }
+        fixed_abs: { type: number, default: 0.01 }
+
+    MonitorCfg:
+      type: object
+      additionalProperties: false
+      properties:
+        manage_triggers:
+          type: array
+          items:
+            type: string
+            enum: [time, pnl, delta, price_touch, event, liquidity]
+          example: [time, pnl, delta, price_touch, event, liquidity]
+        metrics:
+          type: array
+          items:
+            type: string
+            enum: [pnl, annualized_return, theta, margin_usage]
+          example: [pnl, annualized_return, theta, margin_usage]
+
+    Leg:
+      type: object
+      required: [symbol, expiry, strike, right, side, ratio]
+      additionalProperties: false
+      properties:
+        symbol: { type: string }
+        expiry: { type: string, format: date }
+        strike: { type: number }
+        right:  { type: string, enum: [call, put] }
+        side:   { type: string, enum: [long, short] }
+        ratio:  { type: integer, default: 1 }
+
+    Contract:
+      type: object
+      required: [symbol, expiry, strike, right, side, qty]
+      additionalProperties: false
+      properties:
+        symbol: { type: string }
+        expiry: { type: string, format: date }
+        strike: { type: number }
+        right:  { type: string, enum: [call, put] }
+        side:   { type: string, enum: [long, short] }
+        qty:    { type: integer, default: 1 }
+
+    Profiles:
+      type: object
+      additionalProperties: true
+      properties:
+        preset:
+          type: string
+          enum: [conservative, balanced, aggressive]
+
+    Tolerances:
+      type: object
+      additionalProperties: false
+      properties:
+        dte_snap_days: { type: integer, default: 2 }
+        delta_snap:    { type: number, default: 0.01 }
+        width_snap_round: { type: number, nullable: true }
+
+    Relaxation:
+      type: object
+      additionalProperties: false
+      properties:
+        dte_steps:
+          type: array
+          items: { type: integer }
+          example: [5,10]
+        delta_expand_steps:
+          type: array
+          items: { type: number }
+          example: [0.02,0.04]
+        width_expand_steps:
+          type: array
+          items: { type: number }
+          example: [1,2]
+        min_credit_of_width_floor: { type: number, example: 0.28 }
+        max_relax_attempts: { type: integer, example: 3 }
+
+    Config:
+      type: object
+      additionalProperties: false
+      required: [strategy, exit_policy]
+      properties:
+        strategy:    { $ref: '#/components/schemas/StrategyMeta' }
+        contract:    { $ref: '#/components/schemas/Contract' }
+        legs:
+          type: array
+          items: { $ref: '#/components/schemas/Leg' }
+        selector:    { $ref: '#/components/schemas/SelectorCfg' }
+        roll_policy: { $ref: '#/components/schemas/RollPolicy' }
+        exit_policy: { $ref: '#/components/schemas/ExitPolicy' }
+        wing_policy: { $ref: '#/components/schemas/WingPolicy' }
+        execution:   { $ref: '#/components/schemas/Execution' }
+        fees:        { $ref: '#/components/schemas/Fees' }
+        slippage:    { $ref: '#/components/schemas/Slippage' }
+        entry:       { $ref: '#/components/schemas/Entry' }
+        monitor:     { $ref: '#/components/schemas/MonitorCfg' }
+        tolerances:  { $ref: '#/components/schemas/Tolerances' }
+        relaxation:  { $ref: '#/components/schemas/Relaxation' }
+        profiles:    { $ref: '#/components/schemas/Profiles' }
+        user_overrides:
+          type: object
+          additionalProperties: true
+
+    WingPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean, default: true }
+        same_expiry: { type: boolean, default: true }
+        wing_delta: { type: string, example: 0.05-0.10 }
+        max_cost_pct_of_credit: { type: number, example: 0.40 }
+        min_credit_of_width_after_wing: { type: number, example: 0.33 }
+        remove_on_recovery: { type: boolean, default: false }
+
+    DefaultsPayload:
+      type: object
+      additionalProperties: true
+      description: Default thresholds and recommended ranges
+
+security:
+  - BearerAuth: []
+  - ApiKey: []

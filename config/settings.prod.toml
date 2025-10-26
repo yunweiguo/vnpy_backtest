@@ -1,0 +1,16 @@
+# 生产环境：推荐使用只读账号与专属产物目录
+
+[mysql]
+stock_dsn = "mysql+pymysql://prod_user:prod_pass@prod-db.internal:3306/market"
+option_qs_us_dsn = "mysql+pymysql://prod_user:prod_pass@prod-us-opt.internal:3306/option_qs_us"
+option_qs_hk_dsn = "mysql+pymysql://prod_user:prod_pass@prod-hk-opt.internal:3306/option_qs_hk"
+option_history_dsn = "mysql+pymysql://prod_user:prod_pass@prod-db.internal:3306/option_history"
+
+[redis]
+# 建议使用高可用 Redis 或云服务
+url = "redis://prod-redis.internal:6379/0"
+
+[artifacts]
+# 使用对象存储或持久磁盘挂载
+root = "/var/lib/options-backtest/artifacts-prod"
+

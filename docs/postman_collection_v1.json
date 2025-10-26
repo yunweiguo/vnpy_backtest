@@ -1,0 +1,260 @@
+{
+  "info": {
+    "name": "Options Backtest API v1",
+    "_postman_id": "b2c9b6a0-0000-4d00-9000-1234567890ab",
+    "description": "Postman collection for Options Backtest API (vn.py)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.example.com/v1"
+    },
+    {
+      "key": "apiKey",
+      "value": "REPLACE_ME"
+    },
+    {
+      "key": "bearer",
+      "value": "REPLACE_ME"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Validate Config",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/strategies/validate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "strategies",
+            "validate"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"strategy\": {\n    \"id\": \"roll_condor_us\",\n    \"label\": \"US Condor\",\n    \"mode\": \"symbol_selector\",\n    \"market\": \"US\",\n    \"symbols\": [\n      \"AAPL\"\n    ],\n    \"timeframe\": \"1d\",\n    \"trading_calendar\": \"XNYS\"\n  },\n  \"selector\": {\n    \"target_dte\": \"30-60\",\n    \"strike_rule\": \"by_delta\",\n    \"short_delta\": \"0.18-0.25\",\n    \"wing_delta\": \"0.05-0.10\",\n    \"width\": {\n      \"min\": 2,\n      \"max\": 8\n    },\n    \"iv_rank_min\": 50,\n    \"min_credit_of_width\": 0.33,\n    \"candidate_top_k\": 3,\n    \"tie_breakers\": [\n      \"spread\",\n      \"oi\",\n      \"dte\",\n      \"round_strike\"\n    ]\n  },\n  \"roll_policy\": {\n    \"enabled\": true,\n    \"manage_at_dte_lte\": 21,\n    \"roll_to_dte\": \"30-60\",\n    \"threatened_side_only\": true,\n    \"keep_width\": true,\n    \"delta_retarget\": {\n      \"put\": \"0.16-0.25\",\n      \"call\": \"0.20-0.30\"\n    },\n    \"min_expected_return_annualized\": 0.15,\n    \"liquidity_gate\": {\n      \"min_oi\": 500,\n      \"min_volume\": 100,\n      \"max_spread_pct\": 0.08\n    },\n    \"events\": {\n      \"avoid_earnings\": true,\n      \"ex_div_assignment_check\": true\n    }\n  },\n  \"exit_policy\": {\n    \"hard_exit_dte_lte\": 7,\n    \"tp_sl\": {\n      \"credit\": {\n        \"tp_of_max\": [\n          0.25,\n          0.5\n        ],\n        \"sl_x_credit\": [\n          1.5,\n          2.0\n        ]\n      }\n    },\n    \"trailing_after_profit\": {\n      \"trigger\": 0.8,\n      \"drawdown\": 0.2\n    },\n    \"structure\": {\n      \"max_loss_hit_pct\": 0.85\n    },\n    \"liquidity_fallback_exit\": true\n  },\n  \"wing_policy\": {\n    \"enabled\": true,\n    \"same_expiry\": true,\n    \"wing_delta\": \"0.05-0.10\",\n    \"max_cost_pct_of_credit\": 0.4,\n    \"min_credit_of_width_after_wing\": 0.33\n  },\n  \"execution\": {\n    \"combo_order\": true,\n    \"price_preference\": \"mid\",\n    \"price_offset_bps\": 5,\n    \"retry\": {\n      \"max_attempts\": 2,\n      \"backoff_sec\": 1\n    },\n    \"fill_guard\": {\n      \"max_spread_pct\": 0.12,\n      \"min_oi\": 100,\n      \"min_volume\": 10\n    },\n    \"reject_if_guard_fails\": true\n  },\n  \"fees\": {\n    \"commission_per_contract\": 0.65,\n    \"exchange_fees_per_contract\": 0.15,\n    \"exercise_assignment_fee\": 5.0\n  },\n  \"slippage\": {\n    \"model\": \"mid_bps\",\n    \"mid_bps\": 5\n  },\n  \"entry\": {\n    \"liquidity\": {\n      \"min_oi\": 500,\n      \"min_volume\": 100,\n      \"max_spread_pct\": 0.08\n    },\n    \"event_gate\": {\n      \"avoid_earnings\": true\n    },\n    \"signals\": {\n      \"trend\": \"breakout_or_ma\",\n      \"allow_event_play\": false\n    }\n  },\n  \"monitor\": {\n    \"manage_triggers\": [\n      \"time\",\n      \"pnl\",\n      \"delta\",\n      \"price_touch\",\n      \"event\",\n      \"liquidity\"\n    ],\n    \"metrics\": [\n      \"pnl\",\n      \"annualized_return\",\n      \"theta\",\n      \"margin_usage\"\n    ]\n  },\n  \"tolerances\": {\n    \"dte_snap_days\": 2,\n    \"delta_snap\": 0.01\n  },\n  \"relaxation\": {\n    \"dte_steps\": [\n      5,\n      10\n    ],\n    \"delta_expand_steps\": [\n      0.02,\n      0.04\n    ],\n    \"width_expand_steps\": [\n      1,\n      2\n    ],\n    \"min_credit_of_width_floor\": 0.28,\n    \"max_relax_attempts\": 3\n  },\n  \"profiles\": {\n    \"preset\": \"balanced\"\n  },\n  \"user_overrides\": {\n    \"selector.iv_rank_min\": 55\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Create Backtest",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/backtests",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "backtests"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "<<Use the same body as Validate Config>>"
+        }
+      }
+    },
+    {
+      "name": "Get Backtest Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/backtests/:run_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "backtests",
+            ":run_id"
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Artifacts",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/backtests/:run_id/artifacts",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "backtests",
+            ":run_id",
+            "artifacts"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Cancel Backtest",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/backtests/:run_id/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "backtests",
+            ":run_id",
+            "cancel"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Defaults",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reference/defaults",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reference",
+            "defaults"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Resolve Profile",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{bearer}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reference/resolve-profile",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reference",
+            "resolve-profile"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"preset\": \"balanced\",\n  \"user_overrides\": {\n    \"selector.iv_rank_min\": 55\n  }\n}"
+        }
+      }
+    }
+  ]
+}

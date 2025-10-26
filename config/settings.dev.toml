@@ -1,0 +1,14 @@
+# 开发环境：本地数据库与 Redis
+
+[mysql]
+stock_dsn = "mysql+pymysql://dev_user:dev_pass@localhost:3306/market_dev"
+option_qs_us_dsn = "mysql+pymysql://dev_user:dev_pass@localhost:3306/option_qs_us_dev"
+option_qs_hk_dsn = "mysql+pymysql://dev_user:dev_pass@localhost:3306/option_qs_hk_dev"
+option_history_dsn = "mysql+pymysql://dev_user:dev_pass@localhost:3306/option_history_dev"
+
+[redis]
+url = "redis://localhost:6379/0"
+
+[artifacts]
+root = "./artifacts"
+

@@ -1,0 +1,15 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+python-dotenv==1.0.1
+redis==5.0.8
+rq==1.16.2
+SQLAlchemy==2.0.34
+pymysql==1.1.1
+pandas==2.2.3
+exchange-calendars==4.5.3
+python-dateutil==2.9.0.post0
+numpy==1.26.4
+tzdata==2024.2
+requests==2.32.3
+matplotlib==3.8.2

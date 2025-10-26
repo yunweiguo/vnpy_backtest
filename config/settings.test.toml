@@ -1,0 +1,23 @@
+# 测试/集成环境：指向测试数据库、独立 Redis 与产物目录
+
+[mysql]
+# 股票库（stock_trade, hkstock_trade）
+stock_dsn = "mysql+pymysql://stock_trade:etYFdBU3joJDjLKWLhazFYfd8ADNUYdY@172.30.75.22:3313/stock_trade"
+
+# 期权行情/统计库（美股）
+option_qs_us_dsn = "mysql+pymysql://tiger9:rrtJymkqqmgh5iwppye2PrJH@172.30.75.22:3312/option_quote"
+
+# 期权行情/统计库（港股）
+option_qs_hk_dsn = "mysql+pymysql://tiger9:rrtJymkqqmgh5iwppye2PrJH@172.30.75.22:3312/hkoption_quote"
+
+# 期权历史库（us_option_history / hk_option_history）
+option_history_dsn = "mysql+pymysql://tiger9:rrtJymkqqmgh5iwppye2PrJH@172.30.75.22:3312/us_option_history"
+
+
+[redis]
+url = "redis://localhost:6379/0"
+
+
+[artifacts]
+root = "./artifacts"
+
