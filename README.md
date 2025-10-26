@@ -10,7 +10,7 @@
 
 环境与依赖
 
-- Python ≥ 3.10（推荐 3.12，本仓库提供 `.venv` 示例）
+- Python ≥ 3.10（推荐 3.12；目前 PySide6 仅提供到 Python 3.12 的官方轮子，3.13 运行存在风控风险）
 - 安装依赖：`pip install -r requirements.txt`
 - 配置文件：`config/settings.toml`
   - `[mysql]`：分别填写股票库 / 美股期权行情库 / 港股期权行情库 / 历史库的 DSN
@@ -50,11 +50,13 @@ CLI
   python cli/backtest.py artifacts <run_id>
   python cli/backtest.py cancel <run_id>
   python cli/backtest.py local-run examples/config_csp_spv_us.json
+  python cli/backtest.py vnpy-run examples/config_csp_spv_us.json
   ```
 - 如需自定义地址/鉴权，可设置：
   - `BACKTEST_API_BASE`（默认 `http://127.0.0.1:8000`）
   - `BACKTEST_API_KEY` / `BACKTEST_BEARER`
 - `local-run` 会直接在本地执行回测，打印 Summary 与最近若干条交易；可使用 `--no-save` 跳过写入产物，`--trades N` 控制展示的交易数量。默认仍写入 `artifacts/<run_id>/` 以便复盘。
+  - `vnpy-run` 会通过 vn.py BacktestingEngine 调用策略并输出 Summary（需安装 `vnpy` 依赖）。
 
 API 概览
 

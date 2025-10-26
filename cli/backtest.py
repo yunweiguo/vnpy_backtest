@@ -29,6 +29,7 @@ from api.main import ConfigModel, normalize_config
 from settings import load_settings
 from core.logging_config import configure_logging
 from worker.backtest_core import execute_backtest, save_artifacts
+from vnpy_adapter.runner import run_vnpy_backtest
 
 
 def _base_url() -> str:
@@ -158,6 +159,30 @@ def cmd_local_run(args: argparse.Namespace) -> None:
     print(f"Metrics JSON: {run_dir / 'metrics.json'}")
 
 
+def cmd_vnpy_run(args: argparse.Namespace) -> None:
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"配置文件不存在：{config_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        cfg = ConfigModel.model_validate(raw)
+    except Exception as exc:
+        print(f"配置解析失败：{exc}", file=sys.stderr)
+        sys.exit(1)
+
+    normalized = normalize_config(cfg)
+    try:
+        result = run_vnpy_backtest(normalized)
+    except Exception as exc:
+        print(f"vn.py 回测失败：{exc}", file=sys.stderr)
+        raise
+
+    summary = result.get("summary", {})
+    print("=== vn.py Summary ===")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 def _print_response(resp: requests.Response) -> None:
     try:
         data = resp.json()
@@ -202,6 +227,10 @@ def main(argv: list[str] | None = None) -> None:
     local_run.add_argument("--no-save", action="store_true", help="仅打印结果，不写入 artifacts")
     local_run.add_argument("--trades", type=int, default=10, help="展示的交易条数，默认 10 条 (按时间倒序)")
     local_run.set_defaults(func=cmd_local_run)
+
+    vnpy_run = sub.add_parser("vnpy-run", help="通过 vn.py BacktestingEngine 执行回测")
+    vnpy_run.add_argument("config", help="配置文件路径 (JSON)")
+    vnpy_run.set_defaults(func=cmd_vnpy_run)
 
     args = parser.parse_args(argv)
     args.func(args)

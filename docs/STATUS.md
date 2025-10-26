@@ -18,6 +18,7 @@
   - FastAPI API 端点、配置校验、回测队列骨架
   - MySQL DataProvider（分环境 DSN、期权链诊断端点）
   - CSP / Short Put Vertical 最小择券逻辑与产物落地
+  - vn.py BacktestingEngine 适配（OptionRollStrategy/`vnpy-run` CLI）
 - ⏳ 进行中：
   - 数据链诊断深化（IV/Δ 缺失率、放宽日志）
   - 回测 Runner 的退出/展期逻辑
@@ -34,4 +35,3 @@
 5. 规划 CI 流程：单元测试 + 集成回测样例（低）
 
 > 更新流程：建议每个 Sprint 结束后刷新上述表格与日志，保留历史段落，便于审计与复盘。
-
