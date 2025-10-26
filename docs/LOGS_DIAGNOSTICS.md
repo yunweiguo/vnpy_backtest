@@ -26,6 +26,15 @@
   - `equity_drawdown.png`：资金曲线 & 回撤
   - `pnl_distribution.png`：单笔收益分布直方图
 
+## 1.1 运行日志
+
+- 日志配置由 `settings.toml` 的 `[logging]` 控制，默认写入 `./logs/backtest.log`，并同时输出控制台。
+- 关键日志：
+  - `worker.backtest_core`：回测开始/结束、进出场、滚仓、缺失行情等事件
+  - `worker.runner`：队列任务状态
+  - `api`：配置校验、任务创建
+- 日志格式：`YYYY-MM-DD HH:MM:SS [LEVEL] logger-name - message`，附加 `extra` 信息可用于排查（如 `run_id`、`position_id`、`contract_id`）。
+
 ## 2. 诊断接口 `/diagnostics/option-chain`
 
 返回字段示例：
@@ -60,4 +69,3 @@ CLI `local-run` 默认打印：
   - 结合 `trades.csv` 的 `details_json` 查看当次退出原因/腿快照。
 - **滚仓未触发**：
   - `chain.json` 中若没有 `ROLL_EXIT/ROLL_ENTRY`，检查 `manage_at_dte_lte` 与候选 Delta/宽度是否过严。
-

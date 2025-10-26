@@ -12,3 +12,8 @@ url = "redis://localhost:6379/0"
 [artifacts]
 root = "./artifacts"
 
+
+[logging]
+level = "DEBUG"
+file = "./logs/dev-backtest.log"
+console = true

@@ -19,3 +19,8 @@ url = "redis://localhost:6379/0"
 [artifacts]
 root = "./artifacts"
 
+
+[logging]
+level = "INFO"
+file = "./logs/backtest.log"
+console = true

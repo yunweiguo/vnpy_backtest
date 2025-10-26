@@ -15,8 +15,13 @@ from settings import Settings, load_settings
 from core.utils.timezone import tz_for_market
 from core.data.provider import DataProviderConfig, MySQLProvider, LiquidityGate
 from core.strategy.selector_csp_spv import csp_candidates, spv_candidates
+from core.logging_config import configure_logging, get_logger
 from datetime import date as _date
 
+
+_settings = load_settings()
+configure_logging(_settings.log_level, _settings.log_file, _settings.log_console)
+logger = get_logger(__name__)
 
 app = FastAPI(title="Options Backtest API", version="v1")
 
@@ -235,9 +240,11 @@ def validate_strategy(body: Dict[str, Any]):
     try:
         cfg = ConfigModel.model_validate(body)
     except ValidationError as e:
+        logger.warning("Config validation failed", exc_info=False)
         raise HTTPException(status_code=400, detail={"errors": json.loads(e.json())})
     normalized = normalize_config(cfg)
     fp = _fingerprint(normalized)
+    logger.debug("Config validated", extra={"fingerprint": fp})
     return {"normalized_config": normalized, "warnings": [], "errors": [], "fingerprint": fp}
 
 
@@ -247,6 +254,7 @@ def create_backtest(body: Dict[str, Any], Idempotency_Key: Optional[str] = Heade
     try:
         cfg = ConfigModel.model_validate(body)
     except ValidationError as e:
+        logger.warning("Backtest submission validation failed", exc_info=False)
         raise HTTPException(status_code=400, detail={"errors": json.loads(e.json())})
     normalized = normalize_config(cfg)
     run_id = str(uuid.uuid4()) if not Idempotency_Key else str(uuid.uuid5(uuid.NAMESPACE_DNS, Idempotency_Key + _fingerprint(normalized)))
@@ -261,6 +269,7 @@ def create_backtest(body: Dict[str, Any], Idempotency_Key: Optional[str] = Heade
     # enqueue
     q = _redis_queue(settings)
     q.enqueue("worker.runner.run_backtest", run_id, normalized, job_timeout=60*60*6)  # 6h timeout
+    logger.info("Backtest queued", extra={"run_id": run_id})
 
     return {"run_id": run_id, "status": "PENDING"}
 

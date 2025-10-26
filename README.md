@@ -16,6 +16,7 @@
   - `[mysql]`：分别填写股票库 / 美股期权行情库 / 港股期权行情库 / 历史库的 DSN
   - `[redis]`：`url`
   - `[artifacts]`：`root`（产物根目录）
+  - `[logging]`：日志级别、日志文件、是否输出到控制台（默认写入 `./logs/backtest.log`）
 - 可选环境变量：
   - `BACKTEST_CONFIG_PATH`：自定义配置文件路径
   - `BACKTEST_<字段名大写>`：临时覆盖某个配置值（如 `BACKTEST_REDIS_URL`）
@@ -88,6 +89,7 @@ API 概览
 - 示例配置：`examples/config_csp_spv_us.json`
 - 进度追踪：`docs/STATUS.md`
 - 日志/诊断说明：`docs/LOGS_DIAGNOSTICS.md`
+- 日志配置：在 `config/settings*.toml` 的 `[logging]` 段配置 `level/file/console`；日志位于 `logs/` 目录（默认 RollingFile + 控制台）。
 
 回归脚本
 

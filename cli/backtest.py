@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 from api.main import ConfigModel, normalize_config
 from settings import load_settings
+from core.logging_config import configure_logging
 from worker.backtest_core import execute_backtest, save_artifacts
 
 
@@ -111,6 +112,7 @@ def cmd_local_run(args: argparse.Namespace) -> None:
 
     try:
         settings = load_settings()
+        configure_logging(settings.log_level, settings.log_file, settings.log_console)
         result = execute_backtest(normalized, settings)
     except Exception as exc:
         print(f"运行失败：{exc}", file=sys.stderr)

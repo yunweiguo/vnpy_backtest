@@ -14,3 +14,8 @@ url = "redis://prod-redis.internal:6379/0"
 # 使用对象存储或持久磁盘挂载
 root = "/var/lib/options-backtest/artifacts-prod"
 
+
+[logging]
+level = "INFO"
+file = "/var/log/options-backtest/backtest.log"
+console = false

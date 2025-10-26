@@ -23,6 +23,9 @@ class Settings:
     mysql_option_history_dsn: str
     redis_url: str
     artifacts_root: str
+    log_level: str
+    log_file: str
+    log_console: bool
 
 
 def _load_config_dict() -> dict:
@@ -51,6 +54,7 @@ def load_settings() -> Settings:
     mysql = cfg.get("mysql", {})
     redis = cfg.get("redis", {})
     artifacts = cfg.get("artifacts", {})
+    logging_cfg = cfg.get("logging", {})
 
     return Settings(
         mysql_stock_dsn=_env_override("mysql_stock_dsn", mysql.get("stock_dsn")),
@@ -59,4 +63,7 @@ def load_settings() -> Settings:
         mysql_option_history_dsn=_env_override("mysql_option_history_dsn", mysql.get("option_history_dsn")),
         redis_url=_env_override("redis_url", redis.get("url")),
         artifacts_root=_env_override("artifacts_root", artifacts.get("root")),
+        log_level=_env_override("log_level", logging_cfg.get("level", "INFO")),
+        log_file=_env_override("log_file", logging_cfg.get("file", "./logs/backtest.log")),
+        log_console=_env_override("log_console", str(logging_cfg.get("console", True))).lower() in {"1","true","yes"},
     )

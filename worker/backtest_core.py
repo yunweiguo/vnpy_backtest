@@ -18,6 +18,9 @@ from core.strategy.positions import (
     legs_snapshot,
     leg_contract_map,
 )
+from core.logging_config import get_logger
+
+logger = get_logger(__name__)
 from core.utils.timezone import tz_for_market
 from reports.charts import generate_charts
 
@@ -88,6 +91,11 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
             mysql_option_qs_hk_dsn=settings.mysql_option_qs_hk_dsn,
             mysql_option_history_dsn=settings.mysql_option_history_dsn,
         )
+    )
+
+    logger.info(
+        "Backtest execution started",
+        extra={"symbols": symbols, "start": str(start), "end": str(end)},
     )
 
     decisions_rows: List[Dict[str, Any]] = []
@@ -245,6 +253,15 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
                         }
                         for tid in metrics["missing_quotes"]
                     ]
+                    logger.debug(
+                        "Quotes missing",
+                        extra={
+                            "date": date_str,
+                            "symbol": sym,
+                            "position_id": position.position_id,
+                            "missing": missing_detail,
+                        },
+                    )
                     record_decision(
                         {
                             "date": date_str,
@@ -319,6 +336,16 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
                     )
                     summary["exits"] += 1
                     summary["net_pnl"] += metrics["pnl"]
+                    logger.info(
+                        "Position exit",
+                        extra={
+                            "date": date_str,
+                            "symbol": sym,
+                            "position_id": position.position_id,
+                            "reason": reason,
+                            "pnl": metrics["pnl"],
+                        },
+                    )
                     active_positions.pop(sym, None)
                     active_chains.pop(sym, None)
                     continue
@@ -352,6 +379,16 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
                     )
                     summary["rolls"] += 1
                     summary["net_pnl"] += metrics["pnl"]
+                    logger.info(
+                        "Position rolled",
+                        extra={
+                            "date": date_str,
+                            "symbol": sym,
+                            "position_id": position.position_id,
+                            "new_position_id": new_position.position_id,
+                            "pnl": metrics["pnl"],
+                        },
+                    )
 
                     new_position = create_position(sym, roll_candidate.kind, roll_candidate.info, cur, position.chain_id)
                     entry_credit = new_position.entry_credit()
@@ -434,6 +471,16 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
                         {"candidate": picked.info, "legs": legs_snapshot(new_position)},
                     )
                     summary["entries"] += 1
+                    logger.info(
+                        "New position entry",
+                        extra={
+                            "date": date_str,
+                            "symbol": sym,
+                            "position_id": new_position.position_id,
+                            "kind": picked.kind,
+                            "entry_credit": entry_credit,
+                        },
+                    )
 
         cur += timedelta(days=1)
 
@@ -465,6 +512,16 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
         summary["win_rate"] = (len(wins) / len(pnl_values)) if pnl_values else 0.0
         summary["avg_win"] = (sum(wins) / len(wins)) if wins else 0.0
         summary["avg_loss"] = (sum(losses) / len(losses)) if losses else 0.0
+
+    logger.info(
+        "Backtest execution finished",
+        extra={
+            "symbols": symbols,
+            "net_pnl": summary.get("net_pnl"),
+            "entries": summary["entries"],
+            "exits": summary["exits"],
+        },
+    )
 
     return {
         "summary": summary,
