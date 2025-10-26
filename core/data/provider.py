@@ -296,6 +296,7 @@ class MySQLProvider:
         target_ids: Sequence[int],
         session_local_date: date,
         market: str,
+        target_expiries: Optional[Dict[int, date]] = None,
     ) -> Dict[int, OptionRowNormalized]:
         if not target_ids:
             return {}
@@ -309,7 +310,14 @@ class MySQLProvider:
         if not ids_str:
             return {}
 
-        months = month_buckets_between(session_local_date, session_local_date)
+        months: List[str] = []
+        if target_expiries:
+            month_set = set()
+            for exp in target_expiries.values():
+                month_set.update(month_buckets_between(exp, exp))
+            months = sorted(month_set)
+        if not months:
+            months = month_buckets_between(session_local_date, session_local_date)
         schema = self._schema_for_option_history(market)
         tables = [f"{schema}.option_history_quote_{m}" for m in months]
         if not tables:

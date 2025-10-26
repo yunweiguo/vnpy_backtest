@@ -223,12 +223,18 @@ def execute_backtest(config: Dict[str, Any], settings) -> Dict[str, Any]:
 
     cur = start
     while cur <= end:
+        # Skip weekends (no trading sessions) to避免误判行情缺失
+        if cur.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+            cur += timedelta(days=1)
+            continue
+
         for sym in symbols:
             position = active_positions.get(sym)
             date_str = str(cur)
 
             if position:
-                quotes = provider.load_leg_quotes([leg.target_id for leg in position.legs], cur, market)
+                expiry_map = {leg.target_id: leg.expiry for leg in position.legs}
+                quotes = provider.load_leg_quotes([leg.target_id for leg in position.legs], cur, market, target_expiries=expiry_map)
                 metrics = compute_position_metrics(position, quotes)
                 if metrics["missing_quotes"]:
                     contract_map = leg_contract_map(position)
