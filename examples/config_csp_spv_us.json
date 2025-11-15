@@ -20,6 +20,23 @@
   "entry": {
     "liquidity": {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08}
   },
+  "wing_policy": {
+    "enabled": true,
+    "same_expiry": true,
+    "wing_delta": "0.05-0.10",
+    "max_cost_pct_of_credit": 0.3,
+    "min_credit_of_width_after_wing": 0.3
+  },
+  "execution": {
+    "combo_order": true,
+    "price_preference": "mid",
+    "price_offset_bps": 5,
+    "fill_guard": {
+      "max_spread_pct": 0.08,
+      "min_oi": 500,
+      "min_volume": 100
+    },
+    "reject_if_guard_fails": true
+  },
   "backtest": {"start": "2024-01-01", "end": "2024-06-30"}
 }
-

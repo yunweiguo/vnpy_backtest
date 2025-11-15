@@ -72,6 +72,35 @@ class StrategyRuntime:
         delta_retarget = roll_policy.get("delta_retarget_tuple") or {}
         self.roll_delta_range: Tuple[float, float] = tuple(delta_retarget.get("put", self.short_delta))  # type: ignore
 
+        wing_policy = config.get("wing_policy", {}) or {}
+        self.wing_enabled: bool = bool(wing_policy.get("enabled", False))
+        self.wing_same_expiry: bool = bool(wing_policy.get("same_expiry", True))
+        wd = wing_policy.get("wing_delta_tuple") or wing_policy.get("wing_delta")
+        if isinstance(wd, (list, tuple)) and len(wd) >= 2:
+            self.wing_delta_range: Optional[Tuple[float, float]] = (float(wd[0]), float(wd[1]))
+        elif isinstance(wd, str) and "-" in wd:
+            lo, hi = wd.split("-")
+            try:
+                self.wing_delta_range = (float(lo), float(hi))
+            except ValueError:
+                self.wing_delta_range = None
+        else:
+            self.wing_delta_range = None
+        self.wing_max_cost_pct: float = float(wing_policy.get("max_cost_pct_of_credit", 0.3))
+        self.wing_min_credit_width: float = float(wing_policy.get("min_credit_of_width_after_wing", 0.28))
+
+        execution_cfg = config.get("execution", {}) or {}
+        fill_guard_cfg = execution_cfg.get("fill_guard", {}) or {}
+        self.fill_guard = {
+            "max_spread_pct": float(fill_guard_cfg.get("max_spread_pct", self.gate.max_spread_pct)),
+            "min_oi": int(fill_guard_cfg.get("min_oi", self.gate.min_oi)),
+            "min_volume": int(fill_guard_cfg.get("min_volume", self.gate.min_volume)),
+        }
+        self.reject_if_guard_fails: bool = bool(execution_cfg.get("reject_if_guard_fails", True))
+        self.combo_order: bool = bool(execution_cfg.get("combo_order", True))
+        self.execution_price_preference: str = str(execution_cfg.get("price_preference", "mid")).lower()
+        self.execution_price_offset_bps: int = int(execution_cfg.get("price_offset_bps", 5))
+
         tolerances = config.get("tolerances", {}) or {}
         self.delta_snap: float = float(tolerances.get("delta_snap", 0.01))
         self.delta_roll_trigger: float = abs(self.short_delta[1]) + self.delta_snap
@@ -124,6 +153,9 @@ class StrategyRuntime:
             "forced_exits": 0,
             "net_pnl": 0.0,
             "decisions": 0,
+            "fill_guard_rejects": 0,
+            "execution_rejects": 0,
+            "wings_added": 0,
             "annualized_return": None,
             "sharpe_ratio": None,
             "pnl_std": None,
@@ -232,6 +264,8 @@ class StrategyRuntime:
                             manage_reason = "delta_threat"
                     if in_manage:
                         self._mark_manage_window(position, date_str, metrics, manage_reason or "manage_window")
+                        if self._maybe_add_wing(position, sym, session_date, date_str, metrics):
+                            continue
                         if position.kind == "CSP":
                             roll_candidates = csp_candidates(
                                 self.provider,
@@ -270,9 +304,16 @@ class StrategyRuntime:
                             {"short_leg_delta": short_delta, "min_dte": min_dte},
                         )
                         if roll_candidates:
-                            roll_candidate = roll_candidates[0]
-                            action = "ROLL"
-                            reason = manage_reason or "roll_candidate"
+                            candidate = roll_candidates[0]
+                            if self._prepare_candidate_execution(candidate.kind, candidate.info, sym, date_str, "ROLL"):
+                                roll_candidate = candidate
+                                action = "ROLL"
+                                reason = manage_reason or "roll_candidate"
+                            elif self.liquidity_fallback_exit:
+                                action = "EXIT"
+                                reason = "roll_guard_reject"
+                            else:
+                                continue
                         elif self.liquidity_fallback_exit:
                             if chain_rec:
                                 self._log_chain_event(
@@ -332,6 +373,8 @@ class StrategyRuntime:
         if not picked:
             return
 
+        if not self._prepare_candidate_execution(picked.kind, picked.info, symbol, date_str, "ENTRY"):
+            return
         chain_rec = self._get_chain(symbol, picked.kind)
         new_position = self._create_position(symbol, picked.kind, picked.info, session_date, chain_rec["chain_id"])
         entry_credit = new_position.entry_credit()
@@ -531,8 +574,8 @@ class StrategyRuntime:
                     target_id=int(info["target_id"]),
                     side="short",
                     quantity=1,
-                    entry_mid=float(info["mid"]),
-                    entry_mark=float(info.get("mark") or info["mid"]),
+                    entry_mid=float(info.get("fill_mid", info["mid"])),
+                    entry_mark=float(info.get("fill_mark") or info.get("mark") or info["mid"]),
                     multiplier=int(info.get("multiplier", 100)),
                     expiry=expiry,
                     strike=float(info["strike"]),
@@ -547,8 +590,8 @@ class StrategyRuntime:
                     target_id=int(info["short_target_id"]),
                     side="short",
                     quantity=1,
-                    entry_mid=float(info["short_mid"]),
-                    entry_mark=float(info.get("short_mark") or info["short_mid"]),
+                    entry_mid=float(info.get("short_fill_mid", info["short_mid"])),
+                    entry_mark=float(info.get("short_fill_mark") or info.get("short_mark") or info["short_mid"]),
                     multiplier=multiplier,
                     expiry=expiry,
                     strike=float(info["short_strike"]),
@@ -560,8 +603,8 @@ class StrategyRuntime:
                     target_id=int(info["long_target_id"]),
                     side="long",
                     quantity=1,
-                    entry_mid=float(info["long_mid"]),
-                    entry_mark=float(info.get("long_mark") or info["long_mid"]),
+                    entry_mid=float(info.get("long_fill_mid", info["long_mid"])),
+                    entry_mark=float(info.get("long_fill_mark") or info.get("long_mark") or info["long_mid"]),
                     multiplier=multiplier,
                     expiry=expiry,
                     strike=float(info["long_strike"]),
@@ -589,7 +632,7 @@ class StrategyRuntime:
             "status": "ACTIVE",
             "opened_at": None,
             "closed_at": None,
-            "stats": {"entries": 0, "rolls": 0, "exits": 0},
+            "stats": {"entries": 0, "rolls": 0, "exits": 0, "wings": 0},
             "events": [],
         }
         self.chain_records.append(chain_record)
@@ -654,6 +697,126 @@ class StrategyRuntime:
             )
         self.summary["roll_attempts"] += 1
 
+    def _maybe_add_wing(
+        self,
+        position: PositionState,
+        symbol: str,
+        session_date: date,
+        date_str: str,
+        metrics: Dict[str, Any],
+    ) -> bool:
+        if not self.wing_enabled or position.kind != "CSP":
+            return False
+        if any(leg.side == "long" for leg in position.legs):
+            return False
+        short_leg = next((leg for leg in position.legs if leg.side == "short"), None)
+        if not short_leg:
+            return False
+        entry_credit = metrics.get("entry_credit")
+        if entry_credit is None or entry_credit <= 0:
+            return False
+        min_dte = metrics.get("min_dte")
+        if min_dte is None or min_dte < 0:
+            return False
+        dte_window = (max(min_dte - 1, 0), min_dte + 1)
+        wing_rows = self.provider.load_option_chain_daily(
+            opt_symbol=symbol,
+            session_local_date=session_date,
+            market=self.market,
+            dte_window=dte_window,
+            liquidity=self.gate,
+            delta_range=self.wing_delta_range,
+        )
+        target_expiry = short_leg.expiry
+        candidate_row = None
+        sorted_rows = sorted(
+            wing_rows,
+            key=lambda r: (r.expiry_local_date, float(r.strike_dec)),
+            reverse=True,
+        )
+        for row in sorted_rows:
+            if row.right != "put":
+                continue
+            if self.wing_same_expiry and row.expiry_local_date != target_expiry:
+                continue
+            if row.strike_dec >= short_leg.strike:
+                continue
+            candidate_row = row
+            break
+        if not candidate_row:
+            return False
+        width = float(short_leg.strike - float(candidate_row.strike_dec))
+        if width <= 0:
+            return False
+        wing_mid = candidate_row.mid
+        if wing_mid <= 0:
+            return False
+        wing_cost = wing_mid * short_leg.multiplier
+        max_cost = entry_credit * self.wing_max_cost_pct
+        if wing_cost > max_cost:
+            return False
+        credit_after = entry_credit - wing_cost
+        if credit_after <= 0:
+            return False
+        credit_of_width = credit_after / max(width * short_leg.multiplier, 1e-9)
+        if credit_of_width < self.wing_min_credit_width:
+            return False
+        fill_price = self._price_with_preference("long", candidate_row.mid, candidate_row.bid, candidate_row.ask)
+        new_leg = LegPosition(
+            target_id=candidate_row.target_id,
+            side="long",
+            quantity=1,
+            entry_mid=float(fill_price),
+            entry_mark=float(fill_price),
+            multiplier=short_leg.multiplier,
+            expiry=candidate_row.expiry_local_date,
+            strike=float(candidate_row.strike_dec),
+            right="put",
+        )
+        position.legs.append(new_leg)
+        position.entry_info.setdefault("wings", []).append(
+            {
+                "target_id": candidate_row.target_id,
+                "strike": float(candidate_row.strike_dec),
+                "expiry": str(candidate_row.expiry_local_date),
+                "cost": float(fill_price),
+            }
+        )
+        chain_rec = self.active_chains.get(symbol)
+        if chain_rec:
+            event = self._log_chain_event(
+                chain_rec,
+                date_str,
+                "WING_ADD",
+                "wing_added",
+                {
+                    "wing_cost": wing_cost,
+                    "credit_after": credit_after,
+                    "credit_of_width": credit_of_width,
+                    "width": width,
+                },
+                {"wing_target_id": candidate_row.target_id},
+            )
+            position.events.append(event)
+            self._increment_chain_stat(chain_rec, "wings")
+        self.summary["wings_added"] += 1
+        self._append_trade(
+            date_str,
+            symbol,
+            "WING_ENTRY",
+            position.kind,
+            position.position_id,
+            position.chain_id,
+            -wing_cost,
+            None,
+            {
+                "wing_target_id": candidate_row.target_id,
+                "strike": float(candidate_row.strike_dec),
+                "expiry": str(candidate_row.expiry_local_date),
+            },
+        )
+        return True
+
     def _record_decision(self, row: Dict[str, Any], position: PositionState | None = None, chain_id: str | None = None) -> None:
         if position is not None:
             row.setdefault("position_id", position.position_id)
@@ -664,6 +827,112 @@ class StrategyRuntime:
             row.setdefault("chain_id", chain_id)
         self.decisions_rows.append(row)
         self.summary["decisions"] += 1
+
+    def _price_with_preference(self, side: str, mid: float, bid: Optional[float], ask: Optional[float]) -> float:
+        mid = float(mid or 0.0)
+        adj = abs(mid) * self.execution_price_offset_bps / 10_000.0
+        if side == "short":
+            if self.execution_price_preference == "bid" and bid:
+                price = float(bid)
+            elif self.execution_price_preference == "ask" and ask:
+                price = float(ask)
+            else:
+                price = mid - adj
+            return max(price, 0.0)
+        else:
+            if self.execution_price_preference == "ask" and ask:
+                price = float(ask)
+            elif self.execution_price_preference == "bid" and bid:
+                price = float(bid)
+            else:
+                price = mid + adj
+            return max(price, 0.0)
+
+    def _check_fill_guard(self, kind: str, info: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        max_spread_pct = self.fill_guard["max_spread_pct"]
+        min_oi = self.fill_guard["min_oi"]
+        min_volume = self.fill_guard["min_volume"]
+
+        def _leg_ok(prefix: str, mark: Optional[float], bid: Optional[float], ask: Optional[float], oi: Optional[int], vol: Optional[int]) -> Tuple[bool, Optional[str]]:
+            if oi is not None and oi < min_oi:
+                return False, f"{prefix}_min_oi"
+            if vol is not None and vol < min_volume:
+                return False, f"{prefix}_min_volume"
+            if mark and bid is not None and ask is not None and mark > 0:
+                spread = max(0.0, float(ask) - float(bid))
+                if spread > 0 and (spread / float(mark)) > max_spread_pct:
+                    return False, f"{prefix}_spread"
+            return True, None
+
+        if kind == "CSP":
+            ok, reason = _leg_ok(
+                "short",
+                info.get("mark") or info.get("mid"),
+                info.get("bid"),
+                info.get("ask"),
+                info.get("oi"),
+                info.get("volume"),
+            )
+            return ok, reason
+        else:
+            short_ok, short_reason = _leg_ok(
+                "short",
+                info.get("short_mark") or info.get("short_mid"),
+                info.get("short_bid"),
+                info.get("short_ask"),
+                info.get("short_oi"),
+                info.get("short_volume"),
+            )
+            if not short_ok:
+                return False, short_reason
+            long_ok, long_reason = _leg_ok(
+                "long",
+                info.get("long_mark") or info.get("long_mid"),
+                info.get("long_bid"),
+                info.get("long_ask"),
+                info.get("long_oi"),
+                info.get("long_volume"),
+            )
+            return long_ok, long_reason
+
+    def _apply_fill_prices(self, kind: str, info: Dict[str, Any]) -> None:
+        if kind == "CSP":
+            fill = self._price_with_preference("short", info.get("mid", 0.0), info.get("bid"), info.get("ask"))
+            info["fill_mid"] = fill
+            info["fill_mark"] = fill
+        else:
+            short_fill = self._price_with_preference("short", info.get("short_mid", 0.0), info.get("short_bid"), info.get("short_ask"))
+            long_fill = self._price_with_preference("long", info.get("long_mid", 0.0), info.get("long_bid"), info.get("long_ask"))
+            info["short_fill_mid"] = short_fill
+            info["short_fill_mark"] = short_fill
+            info["long_fill_mid"] = long_fill
+            info["long_fill_mark"] = long_fill
+
+    def _log_execution_reject(self, symbol: str, date_str: str, context: str, reason: str, info: Dict[str, Any]) -> None:
+        logger.info(
+            "Execution rejected",
+            extra={"symbol": symbol, "date": date_str, "context": context, "reason": reason, "info": info},
+        )
+
+    def _prepare_candidate_execution(self, kind: str, info: Dict[str, Any], symbol: str, date_str: str, context: str) -> bool:
+        allowed, reason = self._check_fill_guard(kind, info)
+        if not allowed and reason:
+            self.summary["fill_guard_rejects"] += 1
+            self._log_execution_reject(symbol, date_str, context, reason, info)
+            if self.reject_if_guard_fails:
+                self.summary["execution_rejects"] += 1
+                if context == "ENTRY":
+                    self._record_decision(
+                        {
+                            "date": date_str,
+                            "action": "ENTRY_REJECT",
+                            "reason": reason,
+                            "info": info,
+                        }
+                    )
+                return False
+        self._apply_fill_prices(kind, info)
+        return True
 
     def _append_trade(
         self,
