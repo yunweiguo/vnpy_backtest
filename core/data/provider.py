@@ -150,8 +150,12 @@ class MySQLProvider:
         e0_ms = local_midnight_to_utc_ms(add_days(session_local_date, dte_window[0]), tz)
         e1_ms = local_midnight_to_utc_ms(add_days(session_local_date, dte_window[1] + 1), tz)
 
-        # Determine monthly tables between session_date and e1 bound (safe superset)
-        months = month_buckets_between(session_local_date, utc_ms_to_local_date(e1_ms, tz))
+        # Determine monthly tables based on expiry bounds to minimize unnecessary partitions
+        expiry_start = utc_ms_to_local_date(e0_ms, tz)
+        expiry_end = utc_ms_to_local_date(e1_ms - 1, tz) if e1_ms > e0_ms else expiry_start
+        months = month_buckets_between(expiry_start, expiry_end)
+        if not months:
+            months = month_buckets_between(session_local_date, session_local_date)
         schema = self._schema_for_option_history(market)
         tables = [f"{schema}.option_history_quote_{m}" for m in months]
         if not tables:
@@ -169,13 +173,13 @@ class MySQLProvider:
             "symbol = :symbol AND timestamp >= :t0 AND timestamp < :t1 "
             "AND expire_date >= :e0 AND expire_date < :e1"
         )
-        if delta_range is not None:
-            base_where += " AND ABS(delta) BETWEEN :dl AND :dh"
-            params["dl"], params["dh"] = float(delta_range[0]), float(delta_range[1])
-        if liquidity is not None:
-            base_where += " AND open_int >= :min_oi AND volume >= :min_vol"
-            params["min_oi"] = int(liquidity.min_oi)
-            params["min_vol"] = int(liquidity.min_volume)
+        # if delta_range is not None:
+        #     base_where += " AND ABS(delta) BETWEEN :dl AND :dh"
+        #     params["dl"], params["dh"] = float(delta_range[0]), float(delta_range[1])
+        # if liquidity is not None:
+        #     base_where += " AND open_int >= :min_oi AND volume >= :min_vol"
+        #     params["min_oi"] = int(liquidity.min_oi)
+        #     params["min_vol"] = int(liquidity.min_volume)
 
         select_cols = (
             "target_id, symbol, expire_date, strike, `call` AS call_flag, timestamp, "
