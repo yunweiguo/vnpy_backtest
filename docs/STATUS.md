@@ -19,18 +19,19 @@
   - MySQL DataProvider（分环境 DSN、期权链诊断端点）
   - CSP / Short Put Vertical 最小择券逻辑与产物落地
   - vn.py BacktestingEngine 适配（OptionRollStrategy/`vnpy-run` CLI）
+  - CSP/SPV 退出与展期链路：基于短腿 Δ/DTE 的 manage window、滚动候选筛选与链路记录（ENTRY/ROLL/EXIT）
 - ⏳ 进行中：
   - 数据链诊断深化（IV/Δ 缺失率、放宽日志）
-  - 回测 Runner 的退出/展期逻辑
+  - 保护翼/组合成交模型、拒单补偿与 Fill Guard 细化
 - ⚠️ 风险/阻碍：
   - pip 官方包依赖 `typing.TYPE_CHECKING` 为 True 的兼容性问题（已通过 `.venv` patch 解决）
   - 生产数据源的权限与覆盖范围待确认
 
 ## 待办与优先级
 
-1. 落地 CSP/SPV 的退出、展期与交易链记录（高优）
+1. 保护翼（WingPolicy）与组合成交/Fill Guard 回退链路（高）
 2. 引入 option_stat 的 ATM IV 序列，完善 IVR 过滤（中高）
-3. 产物与指标标准化：年化收益、夏普、最大回撤等（中）
+3. 产物与指标标准化：年化收益、夏普、回撤恢复期等（中）
 4. 增加多策略配置示例与 Postman 集合同步（中）
 5. 规划 CI 流程：单元测试 + 集成回测样例（低）
 

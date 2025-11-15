@@ -48,6 +48,8 @@ class PositionState:
     entry_info: Dict[str, Any]
     status: str = "OPEN"
     events: List[Dict[str, Any]] = field(default_factory=list)
+    manage_window_entered: bool = False
+    roll_count: int = 0
 
     def entry_credit(self) -> float:
         return sum(
@@ -77,6 +79,7 @@ def legs_snapshot(position: PositionState, quotes: Optional[Dict[int, OptionRowN
                 "current_mid": q.mid,
                 "current_mark": q.mark,
                 "current_dte": q.dte,
+                "current_delta": q.delta,
             })
         snap.append(data)
     return snap
@@ -91,6 +94,7 @@ def compute_position_metrics(
     pnl = 0.0
     dtes: List[int] = []
     missing: List[int] = []
+    short_leg_delta_abs: Optional[float] = None
 
     for leg in position.legs:
         direction = leg.direction
@@ -102,6 +106,9 @@ def compute_position_metrics(
         buyback_cost += quote.mid * leg.multiplier * leg.quantity * direction
         pnl += (leg.entry_mid - quote.mid) * direction * leg.multiplier * leg.quantity
         dtes.append(quote.dte)
+        if leg.side == "short" and quote.delta is not None:
+            delta_abs = abs(quote.delta)
+            short_leg_delta_abs = max(short_leg_delta_abs or 0.0, delta_abs)
 
     profit_pct = (pnl / entry_credit) if entry_credit > 0 else None
     min_dte = min(dtes) if dtes else None
@@ -112,6 +119,7 @@ def compute_position_metrics(
         "profit_pct": profit_pct,
         "min_dte": min_dte,
         "missing_quotes": missing,
+        "short_leg_delta_abs": short_leg_delta_abs,
     }
 
 
