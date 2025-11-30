@@ -50,6 +50,28 @@ def save_artifacts(run_id: str, result: Dict[str, Any], root: str) -> List[Path]
             json.dumps(record["details"], ensure_ascii=False),
         ])
     write_csv(str(trades_path), header, rows)
+    market_rows = result.get("market_data_rows") or []
+    if market_rows:
+        market_path = run_dir / "market_data.csv"
+        market_header = ["date", "symbol", "expiry", "right", "strike", "bid", "ask", "mid", "delta", "oi", "volume", "dte"]
+        market_values = [
+            [
+                row.get("date"),
+                row.get("symbol"),
+                row.get("expiry"),
+                row.get("right"),
+                row.get("strike"),
+                row.get("bid"),
+                row.get("ask"),
+                row.get("mid"),
+                row.get("delta"),
+                row.get("oi"),
+                row.get("volume"),
+                row.get("dte"),
+            ]
+            for row in market_rows
+        ]
+        write_csv(str(market_path), market_header, market_values)
     write_json(str(chain_path), {"chains": result["chains"]})
     write_json(str(metrics_path), result["summary"])
 

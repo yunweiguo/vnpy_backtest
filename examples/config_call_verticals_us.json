@@ -1,0 +1,43 @@
+{
+  "strategy": {
+    "id": "call_verticals_us",
+    "mode": "symbol_selector",
+    "market": "US",
+    "symbols": ["AAPL"],
+    "timeframe": "1d",
+    "trading_calendar": "XNYS"
+  },
+  "selector": {
+    "target_dte": "25-45",
+    "short_delta": "0.18-0.25",
+    "short_call_delta": "0.22-0.32",
+    "width": {"min": 2, "max": 8},
+    "min_credit_of_width": 0.30,
+    "max_debit_of_width": 0.55,
+    "kinds": ["SCV", "LCV"]
+  },
+  "exit_policy": {
+    "hard_exit_dte_lte": 7,
+    "tp_sl": {"credit": {"tp_of_max": [0.2, 0.4], "sl_x_credit": [1.5, 2.0]}}
+  },
+  "entry": {
+    "liquidity": {"min_oi": 300, "min_volume": 50, "max_spread_pct": 0.10}
+  },
+  "execution": {
+    "combo_order": true,
+    "price_preference": "mid",
+    "price_offset_bps": 5,
+    "fill_guard": {
+      "max_spread_pct": 0.10,
+      "min_oi": 300,
+      "min_volume": 50
+    },
+    "reject_if_guard_fails": true
+  },
+  "wing_policy": {"enabled": false},
+  "backtest": {"start": "2024-01-01", "end": "2024-06-30"},
+  "debug": {
+    "log_market_data": true,
+    "dump_market_data_csv": true
+  }
+}

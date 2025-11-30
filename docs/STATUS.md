@@ -25,6 +25,7 @@
 - ⏳ 进行中：
   - 数据链诊断深化（IV/Δ 缺失率、放宽日志）
   - 引入 option_stat、IVR 过滤与更多策略模板
+  - 多策略扩展阶段 1：Short/Long Call Vertical、Iron Condor selector/runtime（`selector.kinds`、call delta、示例配置）
 - ⚠️ 风险/阻碍：
   - pip 官方包依赖 `typing.TYPE_CHECKING` 为 True 的兼容性问题（已通过 `.venv` patch 解决）
   - 生产数据源的权限与覆盖范围待确认
@@ -33,7 +34,7 @@
 
 1. 引入 option_stat 的 ATM IV 序列，完善 IVR 过滤（中高）
 2. 数据诊断/日志强化：IV/Δ 缺失率统计、放宽流程追踪（中高）
-3. 多策略配置示例与 Postman 集合同步（中）
+3. 多策略扩展（参考 `docs/STRATEGY_EXPANSION_PLAN.md` 阶段 1-3，产出配置/接口草稿）（中）
 4. 规划 CI 流程：单元测试 + 集成回测样例（低）
 5. 保护翼/执行逻辑的更多策略（如铁鹰/蝶式）扩展（低）
 

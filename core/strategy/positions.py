@@ -42,7 +42,7 @@ class PositionState:
     position_id: str
     chain_id: str
     symbol: str
-    kind: str  # 'CSP' | 'SPV'
+    kind: str  # CSP=Cash-Secured Put, SPV=Short Put Vertical, SCV=Short Call Vertical, LCV=Long Call Vertical, IC=Iron Condor
     entry_date: date
     legs: List[LegPosition]
     entry_info: Dict[str, Any]

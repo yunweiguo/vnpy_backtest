@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from core.data.provider import LiquidityGate, MySQLProvider
 from core.models.normalized import OptionRowNormalized
@@ -11,7 +10,7 @@ from datetime import date
 
 @dataclass
 class Candidate:
-    kind: str  # 'CSP' | 'SPV'
+    kind: str  # CSP=Cash-Secured Put, SPV=Short Put Vertical, SCV=Short Call Vertical, LCV=Long Call Vertical
     score: float
     info: Dict
 
@@ -29,6 +28,11 @@ def _filter_short_puts(rows: List[OptionRowNormalized], short_delta_range: Tuple
     lo, hi = short_delta_range
     # For puts, delta is negative; use abs(delta)
     return [r for r in rows if r.right == 'put' and r.delta is not None and abs(r.delta) >= lo and abs(r.delta) <= hi]
+
+
+def _filter_short_calls(rows: List[OptionRowNormalized], short_delta_range: Tuple[float, float]) -> List[OptionRowNormalized]:
+    lo, hi = short_delta_range
+    return [r for r in rows if r.right == 'call' and r.delta is not None and r.delta >= lo and r.delta <= hi]
 
 
 def csp_candidates(
@@ -167,5 +171,159 @@ def spv_candidates(
     pairs.sort(key=lambda x: x[0], reverse=True)
     out: List[Candidate] = []
     for score, info in pairs[:top_k]:
+        info.setdefault("short_right", "put")
+        info.setdefault("long_right", "put")
         out.append(Candidate(kind="SPV", score=float(score), info=info))
+    return out
+
+
+def scv_candidates(
+    provider: MySQLProvider,
+    symbol: str,
+    session_local_date,
+    market: str,
+    target_dte: Tuple[int, int],
+    short_delta: Tuple[float, float],
+    width_minmax: Tuple[int, int],
+    min_credit_of_width: float,
+    liquidity: LiquidityGate,
+    top_k: int = 3,
+) -> List[Candidate]:
+    rows = provider.load_option_chain_daily(
+        opt_symbol=symbol,
+        session_local_date=session_local_date,
+        market=market,
+        dte_window=target_dte,
+        liquidity=liquidity,
+        delta_range=short_delta,
+    )
+    calls = _filter_short_calls(rows, short_delta)
+    pairs: List[Tuple[float, dict]] = []
+    for sc in calls:
+        same_exp = [x for x in rows if x.expiry_local_date == sc.expiry_local_date and x.right == 'call']
+        for lc in same_exp:
+            if lc.strike_dec <= sc.strike_dec:
+                continue
+            width = float(lc.strike_dec - sc.strike_dec)
+            if width < width_minmax[0] or width > width_minmax[1]:
+                continue
+            credit = sc.mid - lc.mid
+            if credit <= 0:
+                continue
+            credit_ratio = credit / width if width > 0 else 0.0
+            if credit_ratio < min_credit_of_width:
+                continue
+            spread = max(0.0, (sc.ask - sc.bid) + (lc.ask - lc.bid))
+            spread_pen = spread / max(sc.mark + lc.mark, 1e-6)
+            liq_bonus = ((sc.open_interest or 0) + (lc.open_interest or 0)) / 1000.0
+            score = credit_ratio - 0.2 * spread_pen + 0.1 * liq_bonus
+            pairs.append((score, {
+                "expiry": str(sc.expiry_local_date),
+                "short_target_id": sc.target_id,
+                "long_target_id": lc.target_id,
+                "short_strike": float(sc.strike_dec),
+                "long_strike": float(lc.strike_dec),
+                "width": width,
+                "dte": sc.dte,
+                "credit": credit,
+                "short_delta": sc.delta,
+                "short_oi": sc.open_interest,
+                "short_volume": sc.volume,
+                "long_oi": lc.open_interest,
+                "long_volume": lc.volume,
+                "short_mid": sc.mid,
+                "short_mark": sc.mark,
+                "short_bid": sc.bid,
+                "short_ask": sc.ask,
+                "long_mid": lc.mid,
+                "long_mark": lc.mark,
+                "long_bid": lc.bid,
+                "long_ask": lc.ask,
+                "multiplier": sc.multiplier,
+                "short_right": "call",
+                "long_right": "call",
+                "short_contract_id": _contract_id(sc.opt_symbol, sc.expiry_local_date, float(sc.strike_dec), sc.right),
+                "long_contract_id": _contract_id(lc.opt_symbol, lc.expiry_local_date, float(lc.strike_dec), lc.right),
+            }))
+
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    out: List[Candidate] = []
+    for score, info in pairs[:top_k]:
+        out.append(Candidate(kind="SCV", score=float(score), info=info))
+    return out
+
+
+def lcv_candidates(
+    provider: MySQLProvider,
+    symbol: str,
+    session_local_date,
+    market: str,
+    target_dte: Tuple[int, int],
+    short_delta: Tuple[float, float],
+    width_minmax: Tuple[int, int],
+    max_debit_of_width: float,
+    liquidity: LiquidityGate,
+    top_k: int = 3,
+) -> List[Candidate]:
+    rows = provider.load_option_chain_daily(
+        opt_symbol=symbol,
+        session_local_date=session_local_date,
+        market=market,
+        dte_window=target_dte,
+        liquidity=liquidity,
+        delta_range=short_delta,
+    )
+    short_calls = _filter_short_calls(rows, short_delta)
+    combos: List[Tuple[float, dict]] = []
+    for sc in short_calls:
+        same_exp = [x for x in rows if x.expiry_local_date == sc.expiry_local_date and x.right == 'call']
+        for lc in same_exp:
+            if lc.strike_dec >= sc.strike_dec:
+                continue
+            width = float(sc.strike_dec - lc.strike_dec)
+            if width < width_minmax[0] or width > width_minmax[1]:
+                continue
+            debit = lc.mid - sc.mid
+            if debit <= 0:
+                continue
+            debit_ratio = debit / width if width > 0 else float('inf')
+            if debit_ratio > max_debit_of_width:
+                continue
+            spread = max(0.0, (sc.ask - sc.bid) + (lc.ask - lc.bid))
+            spread_pen = spread / max(sc.mark + lc.mark, 1e-6)
+            liq_bonus = ((sc.open_interest or 0) + (lc.open_interest or 0)) / 1000.0
+            score = (max_debit_of_width - debit_ratio) - 0.2 * spread_pen + 0.1 * liq_bonus
+            combos.append((score, {
+                "expiry": str(sc.expiry_local_date),
+                "short_target_id": sc.target_id,
+                "long_target_id": lc.target_id,
+                "short_strike": float(sc.strike_dec),
+                "long_strike": float(lc.strike_dec),
+                "width": width,
+                "dte": sc.dte,
+                "debit": debit,
+                "short_delta": sc.delta,
+                "short_oi": sc.open_interest,
+                "short_volume": sc.volume,
+                "long_oi": lc.open_interest,
+                "long_volume": lc.volume,
+                "short_mid": sc.mid,
+                "short_mark": sc.mark,
+                "short_bid": sc.bid,
+                "short_ask": sc.ask,
+                "long_mid": lc.mid,
+                "long_mark": lc.mark,
+                "long_bid": lc.bid,
+                "long_ask": lc.ask,
+                "multiplier": sc.multiplier,
+                "short_right": "call",
+                "long_right": "call",
+                "short_contract_id": _contract_id(sc.opt_symbol, sc.expiry_local_date, float(sc.strike_dec), sc.right),
+                "long_contract_id": _contract_id(lc.opt_symbol, lc.expiry_local_date, float(lc.strike_dec), lc.right),
+            }))
+
+    combos.sort(key=lambda x: x[0], reverse=True)
+    out: List[Candidate] = []
+    for score, info in combos[:top_k]:
+        out.append(Candidate(kind="LCV", score=float(score), info=info))
     return out

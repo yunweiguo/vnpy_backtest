@@ -16,9 +16,33 @@ from core.strategy.positions import (
     leg_contract_map,
     legs_snapshot,
 )
-from core.strategy.selector_csp_spv import csp_candidates, spv_candidates
+from core.strategy.registry import registry, display_name
+import core.strategy.selectors  # noqa: F401 ensures selector registry is populated
+from core.strategy.selector_csp_spv import csp_candidates, spv_candidates, scv_candidates, lcv_candidates
 
 logger = get_logger(__name__)
+
+
+SUPPORTED_KINDS = {"CSP", "SPV", "SCV", "LCV", "IC"}
+CALL_KINDS = {"SCV", "LCV", "IC"}
+
+
+def _coerce_float(val, default: float) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except Exception:
+        return default
+
+
+def _coerce_range(val: Any, default: Tuple[float, float]) -> Tuple[float, float]:
+    if isinstance(val, (list, tuple)) and len(val) >= 2 and val[0] is not None and val[1] is not None:
+        try:
+            return float(val[0]), float(val[1])
+        except Exception:
+            return default
+    return default
 
 
 class StrategyRuntime:
@@ -44,9 +68,36 @@ class StrategyRuntime:
         selector = config.get("selector", {})
         self.target_dte: Tuple[int, int] = tuple(selector.get("target_dte_tuple", (30, 60)))  # type: ignore
         self.short_delta: Tuple[float, float] = tuple(selector.get("short_delta_tuple", (0.18, 0.25)))  # type: ignore
+        call_delta_tuple = selector.get("short_call_delta_tuple")
+        if call_delta_tuple:
+            self.short_call_delta: Tuple[float, float] = tuple(call_delta_tuple)  # type: ignore
+        else:
+            self.short_call_delta = self.short_delta
         width_cfg = selector.get("width") or {"min": 2, "max": 8}
         self.width_range: Tuple[int, int] = (int(width_cfg.get("min", 2)), int(width_cfg.get("max", 8)))
         self.min_cow: float = float(selector.get("min_credit_of_width", 0.33))
+        max_debit_raw = selector.get("max_debit_of_width")
+        if max_debit_raw is None:
+            max_debit_raw = 0.55
+        self.max_debit_of_width: float = float(max_debit_raw)
+        kinds_cfg = selector.get("kinds") or selector.get("strategy_kinds") or ["CSP", "SPV"]
+        if isinstance(kinds_cfg, str):
+            kinds_list = [kinds_cfg]
+        else:
+            kinds_list = list(kinds_cfg)
+        normalized_kinds: List[str] = []
+        for kind in kinds_list:
+            if not kind:
+                continue
+            upper = str(kind).upper()
+            if upper not in SUPPORTED_KINDS:
+                logger.warning("Unsupported strategy kind %s ignored", kind)
+                continue
+            if upper not in normalized_kinds:
+                normalized_kinds.append(upper)
+        if not normalized_kinds:
+            normalized_kinds = ["CSP", "SPV"]
+        self.strategy_kinds: List[str] = normalized_kinds
 
         entry = config.get("entry", {})
         liq_cfg = entry.get("liquidity", {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08})
@@ -70,7 +121,10 @@ class StrategyRuntime:
         self.manage_at_dte: Optional[int] = int(manage_at_dte) if manage_at_dte is not None else None
         self.roll_to_range: Tuple[int, int] = _parse_range(roll_policy.get("roll_to_dte_tuple") or roll_policy.get("roll_to_dte"), self.target_dte)
         delta_retarget = roll_policy.get("delta_retarget_tuple") or {}
-        self.roll_delta_range: Tuple[float, float] = tuple(delta_retarget.get("put", self.short_delta))  # type: ignore
+        put_retarget = delta_retarget.get("put", self.short_delta)
+        call_retarget = delta_retarget.get("call", self.short_call_delta)
+        self.roll_delta_range_put: Tuple[float, float] = tuple(put_retarget)  # type: ignore
+        self.roll_delta_range_call: Tuple[float, float] = tuple(call_retarget)  # type: ignore
 
         wing_policy = config.get("wing_policy", {}) or {}
         self.wing_enabled: bool = bool(wing_policy.get("enabled", False))
@@ -86,8 +140,14 @@ class StrategyRuntime:
                 self.wing_delta_range = None
         else:
             self.wing_delta_range = None
-        self.wing_max_cost_pct: float = float(wing_policy.get("max_cost_pct_of_credit", 0.3))
-        self.wing_min_credit_width: float = float(wing_policy.get("min_credit_of_width_after_wing", 0.28))
+        max_cost_raw = wing_policy.get("max_cost_pct_of_credit")
+        if max_cost_raw is None:
+            max_cost_raw = 0.3
+        min_cow_wing_raw = wing_policy.get("min_credit_of_width_after_wing")
+        if min_cow_wing_raw is None:
+            min_cow_wing_raw = 0.28
+        self.wing_max_cost_pct: float = float(max_cost_raw)
+        self.wing_min_credit_width: float = float(min_cow_wing_raw)
 
         execution_cfg = config.get("execution", {}) or {}
         fill_guard_cfg = execution_cfg.get("fill_guard", {}) or {}
@@ -103,8 +163,14 @@ class StrategyRuntime:
 
         tolerances = config.get("tolerances", {}) or {}
         self.delta_snap: float = float(tolerances.get("delta_snap", 0.01))
-        self.delta_roll_trigger: float = abs(self.short_delta[1]) + self.delta_snap
+        max_delta_hi = max(abs(self.short_delta[1]), abs(self.short_call_delta[1]))
+        self.delta_roll_trigger: float = max_delta_hi + self.delta_snap
         self.delta_force_exit: float = self.delta_roll_trigger + self.delta_snap
+
+        debug_cfg = config.get("debug", {}) or {}
+        self.debug_log_market: bool = bool(debug_cfg.get("log_market_data", False))
+        self.debug_log_market_limit: int = int(debug_cfg.get("log_market_data_limit", 10))
+        self.debug_dump_market_csv: bool = bool(debug_cfg.get("dump_market_data_csv", False))
 
         bt = config.get("backtest", {})
         start_s = bt.get("start")
@@ -143,6 +209,7 @@ class StrategyRuntime:
         self.active_positions: Dict[str, PositionState] = {}
         self.pnl_events: List[Dict[str, Any]] = []
         self.entry_credit_history: List[float] = []
+        self.market_data_rows: List[Dict[str, Any]] = []
         self.summary: Dict[str, Any] = {
             "entries": 0,
             "exits": 0,
@@ -179,6 +246,8 @@ class StrategyRuntime:
             return
         date_str = str(session_date)
         for sym in self.symbols:
+            if self.debug_log_market or self.debug_dump_market_csv:
+                self._log_market_snapshot(sym, session_date)
             position = self.active_positions.get(sym)
 
             if position:
@@ -266,35 +335,29 @@ class StrategyRuntime:
                         self._mark_manage_window(position, date_str, metrics, manage_reason or "manage_window")
                         if self._maybe_add_wing(position, sym, session_date, date_str, metrics):
                             continue
+                        delta_range = self._delta_range_for_kind(position.kind, for_roll=True)
+                        roll_candidates = self._fetch_candidates(
+                            position.kind,
+                            sym,
+                            session_date,
+                            self.roll_to_range,
+                            delta_range,
+                            top_k=3,
+                        )
+                        short_targets = [leg.target_id for leg in position.legs if leg.side == "short"]
+                        primary_short = short_targets[0] if short_targets else None
                         if position.kind == "CSP":
-                            roll_candidates = csp_candidates(
-                                self.provider,
-                                sym,
-                                session_date,
-                                self.market,
-                                self.roll_to_range,
-                                self.roll_delta_range,
-                                self.gate,
-                                top_k=3,
-                            )
-                            short_target = next((leg.target_id for leg in position.legs if leg.side == "short"), None)
-                            roll_candidates = [cand for cand in roll_candidates if cand.info.get("target_id") != short_target]
-                        else:
-                            roll_candidates = spv_candidates(
-                                self.provider,
-                                sym,
-                                session_date,
-                                self.market,
-                                self.roll_to_range,
-                                self.roll_delta_range,
-                                self.width_range,
-                                self.min_cow,
-                                self.gate,
-                                top_k=3,
-                            )
-                            short_target = next((leg.target_id for leg in position.legs if leg.side == "short"), None)
+                            roll_candidates = [cand for cand in roll_candidates if cand.info.get("target_id") != primary_short]
+                        elif position.kind == "IC":
                             roll_candidates = [
-                                cand for cand in roll_candidates if cand.info.get("short_target_id") != short_target
+                                cand
+                                for cand in roll_candidates
+                                if cand.info.get("short_put_id") not in short_targets
+                                and cand.info.get("short_call_id") not in short_targets
+                            ]
+                        else:
+                            roll_candidates = [
+                                cand for cand in roll_candidates if cand.info.get("short_target_id") != primary_short
                             ]
                         self._record_roll_attempt(
                             sym,
@@ -350,25 +413,15 @@ class StrategyRuntime:
                 self._handle_entry(sym, session_date, date_str)
 
     def _handle_entry(self, symbol: str, session_date: date, date_str: str) -> None:
-        csp_cands = csp_candidates(self.provider, symbol, session_date, self.market, self.target_dte, self.short_delta, self.gate, top_k=1)
-        spv_cands = spv_candidates(
-            self.provider,
-            symbol,
-            session_date,
-            self.market,
-            self.target_dte,
-            self.short_delta,
-            self.width_range,
-            self.min_cow,
-            self.gate,
-            top_k=1,
-        )
-
         picked = None
-        if csp_cands:
-            picked = csp_cands[0]
-        if spv_cands and (picked is None or spv_cands[0].score > picked.score):
-            picked = spv_cands[0]
+        for kind in self.strategy_kinds:
+            delta_range = self._delta_range_for_kind(kind)
+            candidates = self._fetch_candidates(kind, symbol, session_date, self.target_dte, delta_range, top_k=1)
+            if not candidates:
+                continue
+            candidate = candidates[0]
+            if picked is None or candidate.score > picked.score:
+                picked = candidate
 
         if not picked:
             return
@@ -417,7 +470,14 @@ class StrategyRuntime:
         self.summary["entries"] += 1
         logger.info(
             "New position entry",
-            extra={"date": date_str, "symbol": symbol, "position_id": new_position.position_id, "kind": picked.kind, "entry_credit": entry_credit},
+            extra={
+                "date": date_str,
+                "symbol": symbol,
+                "position_id": new_position.position_id,
+                "kind": picked.kind,
+                "kind_label": display_name(picked.kind),
+                "entry_credit": entry_credit,
+            },
         )
 
     def _handle_exit(
@@ -561,7 +621,14 @@ class StrategyRuntime:
         )
         logger.info(
             "Position rolled",
-            extra={"date": date_str, "symbol": symbol, "position_id": position.position_id, "new_position_id": new_position.position_id, "pnl": metrics["pnl"]},
+            extra={
+                "date": date_str,
+                "symbol": symbol,
+                "kind": display_name(new_position.kind),
+                "position_id": position.position_id,
+                "new_position_id": new_position.position_id,
+                "pnl": metrics["pnl"],
+            },
         )
 
     def _create_position(self, symbol: str, kind: str, info: Dict[str, Any], entry_date: date, chain_id: str) -> PositionState:
@@ -582,9 +649,66 @@ class StrategyRuntime:
                     right=str(info.get("right", "put")),
                 )
             )
+        elif kind == "IC":
+            expiry = date.fromisoformat(info["expiry"]) if isinstance(info.get("expiry"), str) else entry_date
+            multiplier = int(info.get("multiplier", 100))
+            legs.append(
+                LegPosition(
+                    target_id=int(info["short_put_id"]),
+                    side="short",
+                    quantity=1,
+                    entry_mid=float(info.get("short_put_fill", info.get("short_put_mid", 0.0))),
+                    entry_mark=float(info.get("short_put_fill", info.get("short_put_mark", 0.0))),
+                    multiplier=multiplier,
+                    expiry=expiry,
+                    strike=float(info["short_put_strike"]),
+                    right="put",
+                )
+            )
+            legs.append(
+                LegPosition(
+                    target_id=int(info["long_put_id"]),
+                    side="long",
+                    quantity=1,
+                    entry_mid=float(info.get("long_put_fill", info.get("long_put_mid", 0.0))),
+                    entry_mark=float(info.get("long_put_fill", info.get("long_put_mark", 0.0))),
+                    multiplier=multiplier,
+                    expiry=expiry,
+                    strike=float(info["long_put_strike"]),
+                    right="put",
+                )
+            )
+            legs.append(
+                LegPosition(
+                    target_id=int(info["short_call_id"]),
+                    side="short",
+                    quantity=1,
+                    entry_mid=float(info.get("short_call_fill", info.get("short_call_mid", 0.0))),
+                    entry_mark=float(info.get("short_call_fill", info.get("short_call_mark", 0.0))),
+                    multiplier=multiplier,
+                    expiry=expiry,
+                    strike=float(info["short_call_strike"]),
+                    right="call",
+                )
+            )
+            legs.append(
+                LegPosition(
+                    target_id=int(info["long_call_id"]),
+                    side="long",
+                    quantity=1,
+                    entry_mid=float(info.get("long_call_fill", info.get("long_call_mid", 0.0))),
+                    entry_mark=float(info.get("long_call_fill", info.get("long_call_mark", 0.0))),
+                    multiplier=multiplier,
+                    expiry=expiry,
+                    strike=float(info["long_call_strike"]),
+                    right="call",
+                )
+            )
         else:
             expiry = date.fromisoformat(info["expiry"]) if isinstance(info.get("expiry"), str) else entry_date
             multiplier = int(info.get("multiplier", 100))
+            short_right = str(info.get("short_right", "put"))
+            long_right = str(info.get("long_right", "put"))
             legs.append(
                 LegPosition(
                     target_id=int(info["short_target_id"]),
@@ -595,7 +719,7 @@ class StrategyRuntime:
                     multiplier=multiplier,
                     expiry=expiry,
                     strike=float(info["short_strike"]),
-                    right="put",
+                    right=short_right,
                 )
             )
             legs.append(
@@ -608,7 +732,7 @@ class StrategyRuntime:
                     multiplier=multiplier,
                     expiry=expiry,
                     strike=float(info["long_strike"]),
-                    right="put",
+                    right=long_right,
                 )
             )
         return PositionState(
@@ -828,6 +952,144 @@ class StrategyRuntime:
         self.decisions_rows.append(row)
         self.summary["decisions"] += 1
 
+    def _delta_range_for_kind(self, kind: str, for_roll: bool = False) -> Tuple[float, float]:
+        if kind in CALL_KINDS:
+            return self.roll_delta_range_call if for_roll else self.short_call_delta
+        return self.roll_delta_range_put if for_roll else self.short_delta
+
+    def _log_market_snapshot(self, symbol: str, session_date: date) -> None:
+        try:
+            rows = self.provider.load_option_chain_daily(
+                opt_symbol=symbol,
+                session_local_date=session_date,
+                market=self.market,
+                dte_window=self.target_dte,
+                liquidity=None,
+                delta_range=None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Market snapshot load failed",
+                extra={"symbol": symbol, "date": str(session_date), "error": str(exc)},
+            )
+            return
+        rows_sorted = sorted(
+            rows,
+            key=lambda r: (str(r.expiry_local_date), r.right, float(r.strike_dec)),
+        )
+        subset = []
+        limit = max(self.debug_log_market_limit, 1)
+        for row in rows_sorted[:limit]:
+            subset.append(
+                {
+                    "expiry": str(row.expiry_local_date),
+                    "right": row.right,
+                    "strike": float(row.strike_dec),
+                    "bid": row.bid,
+                    "ask": row.ask,
+                    "mid": row.mid,
+                    "delta": row.delta,
+                    "oi": row.open_interest,
+                    "volume": row.volume,
+                    "dte": row.dte,
+                }
+            )
+        if self.debug_log_market:
+            logger.info(
+                "Market snapshot",
+                extra={
+                    "symbol": symbol,
+                    "date": str(session_date),
+                    "total_rows": len(rows),
+                    "top_rows": subset,
+                },
+            )
+        if self.debug_dump_market_csv:
+            for row in rows_sorted:
+                self.market_data_rows.append(
+                    {
+                        "date": str(session_date),
+                        "symbol": symbol,
+                        "expiry": str(row.expiry_local_date),
+                        "right": row.right,
+                        "strike": float(row.strike_dec),
+                        "bid": row.bid,
+                        "ask": row.ask,
+                        "mid": row.mid,
+                        "delta": row.delta,
+                        "oi": row.open_interest,
+                        "volume": row.volume,
+                        "dte": row.dte,
+                    }
+                )
+
+    def _fetch_candidates(
+        self,
+        kind: str,
+        symbol: str,
+        session_date: date,
+        target_dte: Tuple[int, int],
+        delta_range: Tuple[float, float],
+        top_k: int,
+    ) -> List[Any]:
+        spec = registry.get(kind)
+        if spec:
+            return spec.fetch(
+                self.provider,
+                symbol,
+                session_date,
+                self.market,
+                target_dte,
+                delta_range,
+                self.width_range,
+                self.min_cow,
+                self.max_debit_of_width,
+                self.gate,
+                top_k,
+            )
+        if kind == "CSP":
+            return csp_candidates(self.provider, symbol, session_date, self.market, target_dte, delta_range, self.gate, top_k=top_k)
+        if kind == "SPV":
+            return spv_candidates(
+                self.provider,
+                symbol,
+                session_date,
+                self.market,
+                target_dte,
+                delta_range,
+                self.width_range,
+                self.min_cow,
+                self.gate,
+                top_k=top_k,
+            )
+        if kind == "SCV":
+            return scv_candidates(
+                self.provider,
+                symbol,
+                session_date,
+                self.market,
+                target_dte,
+                delta_range,
+                self.width_range,
+                self.min_cow,
+                self.gate,
+                top_k=top_k,
+            )
+        if kind == "LCV":
+            return lcv_candidates(
+                self.provider,
+                symbol,
+                session_date,
+                self.market,
+                target_dte,
+                delta_range,
+                self.width_range,
+                self.max_debit_of_width,
+                self.gate,
+                top_k=top_k,
+            )
+        return []
+
     def _price_with_preference(self, side: str, mid: float, bid: Optional[float], ask: Optional[float]) -> float:
         mid = float(mid or 0.0)
         adj = abs(mid) * self.execution_price_offset_bps / 10_000.0
@@ -874,6 +1136,18 @@ class StrategyRuntime:
                 info.get("volume"),
             )
             return ok, reason
+        if kind == "IC":
+            legs = [
+                ("short_put", info.get("short_put_mark") or info.get("short_put_mid"), info.get("short_put_bid"), info.get("short_put_ask"), info.get("short_put_oi"), info.get("short_put_volume")),
+                ("long_put", info.get("long_put_mark") or info.get("long_put_mid"), info.get("long_put_bid"), info.get("long_put_ask"), info.get("long_put_oi"), info.get("long_put_volume")),
+                ("short_call", info.get("short_call_mark") or info.get("short_call_mid"), info.get("short_call_bid"), info.get("short_call_ask"), info.get("short_call_oi"), info.get("short_call_volume")),
+                ("long_call", info.get("long_call_mark") or info.get("long_call_mid"), info.get("long_call_bid"), info.get("long_call_ask"), info.get("long_call_oi"), info.get("long_call_volume")),
+            ]
+            for prefix, mark, bid, ask, oi, vol in legs:
+                ok, reason = _leg_ok(prefix, mark, bid, ask, oi, vol)
+                if not ok:
+                    return False, reason
+            return True, None
         else:
             short_ok, short_reason = _leg_ok(
                 "short",
@@ -900,6 +1174,11 @@ class StrategyRuntime:
             fill = self._price_with_preference("short", info.get("mid", 0.0), info.get("bid"), info.get("ask"))
             info["fill_mid"] = fill
             info["fill_mark"] = fill
+        elif kind == "IC":
+            info["short_put_fill"] = self._price_with_preference("short", info.get("short_put_mid", 0.0), info.get("short_put_bid"), info.get("short_put_ask"))
+            info["long_put_fill"] = self._price_with_preference("long", info.get("long_put_mid", 0.0), info.get("long_put_bid"), info.get("long_put_ask"))
+            info["short_call_fill"] = self._price_with_preference("short", info.get("short_call_mid", 0.0), info.get("short_call_bid"), info.get("short_call_ask"))
+            info["long_call_fill"] = self._price_with_preference("long", info.get("long_call_mid", 0.0), info.get("long_call_bid"), info.get("long_call_ask"))
         else:
             short_fill = self._price_with_preference("short", info.get("short_mid", 0.0), info.get("short_bid"), info.get("short_ask"))
             long_fill = self._price_with_preference("long", info.get("long_mid", 0.0), info.get("long_bid"), info.get("long_ask"))
@@ -1025,7 +1304,13 @@ class StrategyRuntime:
 
         logger.info(
             "Backtest execution finished",
-            extra={"symbols": self.symbols, "net_pnl": self.summary.get("net_pnl"), "entries": self.summary["entries"], "exits": self.summary["exits"]},
+            extra={
+                "symbols": self.symbols,
+                "net_pnl": self.summary.get("net_pnl"),
+                "entries": self.summary["entries"],
+                "exits": self.summary["exits"],
+                "kinds": [display_name(k) for k in self.strategy_kinds],
+            },
         )
 
         return {
@@ -1035,6 +1320,7 @@ class StrategyRuntime:
             "chains": self.chain_records,
             "pnl_events": self.pnl_events,
             "config": self.config,
+            "market_data_rows": self.market_data_rows if self.debug_dump_market_csv else [],
         }
 
 

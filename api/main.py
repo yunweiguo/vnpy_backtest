@@ -71,12 +71,15 @@ class SelectorCfg(BaseModel):
     target_dte: RangeStr = Field(default=RangeStr(value="30-60"))
     strike_rule: str = Field(default="by_delta")
     short_delta: Optional[RangeStr] = Field(default=RangeStr(value="0.18-0.25"))
+    short_call_delta: Optional[RangeStr] = None
     wing_delta: Optional[RangeStr] = Field(default=None)
     width: Optional[WidthCfg] = None
     iv_rank_min: Optional[int] = None
     min_credit_of_width: Optional[float] = None
+    max_debit_of_width: Optional[float] = None
     candidate_top_k: int = 3
-    tie_breakers: List[str] = Field(default_factory=lambda: ["spread","oi","dte","round_strike"]) 
+    tie_breakers: List[str] = Field(default_factory=lambda: ["spread","oi","dte","round_strike"])
+    kinds: List[Literal["CSP", "SPV", "SCV", "LCV", "IC"]] = Field(default_factory=lambda: ["CSP", "SPV"])
 
 
 class LiquidityGate(BaseModel):
@@ -162,6 +165,13 @@ class SlippageModel(BaseModel):
     fixed_abs: float = 0.01
 
 
+class DebugModel(BaseModel):
+    log_market_data: bool = False
+    log_market_data_limit: int = 10
+    dump_market_data_csv: bool = False
+    market_data_csv_path: Optional[str] = None
+
+
 class MonitorModel(BaseModel):
     manage_triggers: List[Literal["time", "pnl", "delta", "price_touch", "event", "liquidity"]] = Field(
         default_factory=lambda: ["time", "pnl", "delta", "price_touch", "event", "liquidity"]
@@ -184,6 +194,7 @@ class ConfigModel(BaseModel):
     monitor: Optional[MonitorModel] = None
     tolerances: Tolerances = Field(default_factory=Tolerances)
     relaxation: Relaxation = Field(default_factory=Relaxation)
+    debug: Optional[DebugModel] = None
     profiles: Optional[Dict[str, Any]] = None
     user_overrides: Optional[Dict[str, Any]] = None
     backtest: Optional[Dict[str, Any]] = None  # start/end dates optional
@@ -203,6 +214,8 @@ def normalize_config(cfg: ConfigModel) -> Dict[str, Any]:
         data["selector"]["target_dte_tuple"] = td
         if cfg.selector.short_delta:
             data["selector"]["short_delta_tuple"] = cfg.selector.short_delta.as_tuple()
+        if cfg.selector.short_call_delta:
+            data["selector"]["short_call_delta_tuple"] = cfg.selector.short_call_delta.as_tuple()
         if cfg.selector.wing_delta:
             data["selector"]["wing_delta_tuple"] = cfg.selector.wing_delta.as_tuple()
     if cfg.roll_policy:
@@ -322,7 +335,13 @@ def get_defaults():
     # Minimal defaults; align with docs where possible
     return {
         "liquidity": {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08},
-        "selector": {"target_dte": "30-60", "short_delta": "0.18-0.25", "min_credit_of_width": 0.33},
+        "selector": {
+            "target_dte": "30-60",
+            "short_delta": "0.18-0.25",
+            "min_credit_of_width": 0.33,
+            "max_debit_of_width": 0.55,
+            "kinds": ["CSP", "SPV"],
+        },
         "roll_policy": {"manage_at_dte_lte": 21, "roll_to_dte": "30-60"},
         "exit_policy": {"hard_exit_dte_lte": 7, "tp_of_max": [0.25, 0.5], "sl_x_credit": [1.5, 2.0]},
     }
@@ -334,7 +353,14 @@ def resolve_profile(body: Dict[str, Any]):
     overrides = body.get("user_overrides", {})
     base = {
         "strategy": {"id": "csp_spv_us", "mode": "symbol_selector", "market": "US", "symbols": ["AAPL"], "timeframe": "1d"},
-        "selector": {"target_dte": "30-60", "short_delta": "0.18-0.25", "width": {"min": 2, "max": 8}, "min_credit_of_width": 0.33},
+        "selector": {
+            "target_dte": "30-60",
+            "short_delta": "0.18-0.25",
+            "width": {"min": 2, "max": 8},
+            "min_credit_of_width": 0.33,
+            "max_debit_of_width": 0.55,
+            "kinds": ["CSP", "SPV"],
+        },
         "exit_policy": {"hard_exit_dte_lte": 7, "tp_sl": {"credit": {"tp_of_max": [0.25, 0.5], "sl_x_credit": [1.5, 2.0]}}},
         "entry": {"liquidity": {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08}},
     }

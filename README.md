@@ -89,7 +89,10 @@ API 概览
 
 - 产物目录：`artifacts/{run_id}/`，含 `decisions.jsonl`、`trades.csv`、`chain.json`、`metrics.json`
 - 示例配置：`examples/config_csp_spv_us.json`
+- Call Vertical 示例：`examples/config_call_verticals_us.json`
+- Iron Condor 示例：`examples/config_iron_condor_us.json`
 - 进度追踪：`docs/STATUS.md`
+- 策略扩展规划：`docs/STRATEGY_EXPANSION_PLAN.md`
 - 日志/诊断说明：`docs/LOGS_DIAGNOSTICS.md`
 - 日志配置：在 `config/settings*.toml` 的 `[logging]` 段配置 `level/file/console`；日志位于 `logs/` 目录（默认 RollingFile + 控制台）。
 - API 验证：`docs/API_TESTING.md`（Postman 与 requests 脚本）
@@ -112,3 +115,25 @@ API 概览
 - M1 聚焦 CSP 与 Short Put Vertical 的择券逻辑，展期/退出与完整 KPI 将按路线图逐步补齐。
 - 港股乘数/最小跳从 `hkoption_quote.option_basic` 读取；美股乘数默认 100。
 - 历史表采用“本地 00:00 → UTC 毫秒”的 `timestamp/expire_date`，运行时按市场时区恢复为会话日/到期日并计算 DTE。
+
+-多策略配置
+
+- `selector.kinds`：控制可用策略列表（顺序即择券优先级），目前支持：
+  - `CSP`（Cash-Secured Put，备兑现金卖出认沽）
+  - `SPV`（Short Put Vertical，卖出看跌价差）
+  - `SCV`（Short Call Vertical，卖出看涨价差）
+  - `LCV`（Long Call Vertical，买入看涨价差）
+  - `IC`（Iron Condor，铁秃鹰，多腿双卖带保护）
+- `selector.short_call_delta`：可单独定义 Call 侧短腿 Δ 目标，未配置时沿用 `short_delta`。
+- `selector.max_debit_of_width`：限制多腿借记策略（如 Long Call Vertical）的净借记/腿宽上限；默认 0.55。
+- 以上字段通过 `normalize_config` 归一后会生成 `*_tuple` 形式，供运行时和诊断工具消费。
+
+策略注册表
+
+- 内置策略在 `core/strategy/selectors/` 拆分实现（puts/calls），并在 `core/strategy/registry.py` 的注册表中统一管理；`StrategyRuntime` 从注册表获取候选，便于后续增加新策略（如铁鹰/蝶式）而无需改分支。
+
+调试开关
+
+- `debug.log_market_data`：置为 `true` 时，回测会在每个交易日打印目标 DTE 窗口内的期权链快照（含 `expiry/right/strike/bid/ask/mid/delta/oi/volume/dte`）。
+- `debug.log_market_data_limit`：控制每日日志展示的行数，默认 10 行（按到期日/权利方向/行权价排序）。
+- `debug.dump_market_data_csv`：置为 `true` 时，会将每日目标 DTE 窗口的完整期权链写入 `artifacts/<run_id>/market_data.csv`，与 `trades.csv` 等产物位于同一目录，便于离线排查。
