@@ -18,6 +18,8 @@ from core.strategy.positions import (
 )
 from core.strategy.registry import registry, display_name
 import core.strategy.selectors  # noqa: F401 ensures selector registry is populated
+from core.strategy.strategies import apply_fill_prices, build_position, check_fill_guard, filter_roll_candidates, \
+    kind_label, FillGuardRules, can_add_wing, decide_exit_and_manage
 from core.strategy.selector_csp_spv import csp_candidates, spv_candidates, scv_candidates, lcv_candidates
 
 logger = get_logger(__name__)
@@ -75,11 +77,8 @@ class StrategyRuntime:
             self.short_call_delta = self.short_delta
         width_cfg = selector.get("width") or {"min": 2, "max": 8}
         self.width_range: Tuple[int, int] = (int(width_cfg.get("min", 2)), int(width_cfg.get("max", 8)))
-        self.min_cow: float = float(selector.get("min_credit_of_width", 0.33))
-        max_debit_raw = selector.get("max_debit_of_width")
-        if max_debit_raw is None:
-            max_debit_raw = 0.55
-        self.max_debit_of_width: float = float(max_debit_raw)
+        self.min_cow: float = _coerce_float(selector.get("min_credit_of_width"), 0.33)
+        self.max_debit_of_width: float = _coerce_float(selector.get("max_debit_of_width"), 0.55)
         kinds_cfg = selector.get("kinds") or selector.get("strategy_kinds") or ["CSP", "SPV"]
         if isinstance(kinds_cfg, str):
             kinds_list = [kinds_cfg]
@@ -102,9 +101,9 @@ class StrategyRuntime:
         entry = config.get("entry", {})
         liq_cfg = entry.get("liquidity", {"min_oi": 500, "min_volume": 100, "max_spread_pct": 0.08})
         self.gate = LiquidityGate(
-            min_oi=int(liq_cfg.get("min_oi", 500)),
-            min_volume=int(liq_cfg.get("min_volume", 100)),
-            max_spread_pct=float(liq_cfg.get("max_spread_pct", 0.08)),
+            min_oi=int(liq_cfg.get("min_oi") or 500),
+            min_volume=int(liq_cfg.get("min_volume") or 100),
+            max_spread_pct=_coerce_float(liq_cfg.get("max_spread_pct"), 0.08),
         )
 
         exit_policy = config.get("exit_policy", {})
@@ -112,8 +111,8 @@ class StrategyRuntime:
         credit_cfg = exit_policy.get("tp_sl", {}).get("credit", {}) if isinstance(exit_policy.get("tp_sl"), dict) else {}
         tp_values = credit_cfg.get("tp_of_max") or []
         sl_values = credit_cfg.get("sl_x_credit") or []
-        self.take_profit_threshold: Optional[float] = float(tp_values[0]) if tp_values else None
-        self.stop_loss_multiple: Optional[float] = float(sl_values[0]) if sl_values else None
+        self.take_profit_threshold: Optional[float] = _coerce_float(tp_values[0], None) if tp_values else None  # type: ignore
+        self.stop_loss_multiple: Optional[float] = _coerce_float(sl_values[0], None) if sl_values else None  # type: ignore
         self.liquidity_fallback_exit: bool = bool(exit_policy.get("liquidity_fallback_exit", True))
 
         roll_policy = config.get("roll_policy", {}) or {}
@@ -121,10 +120,10 @@ class StrategyRuntime:
         self.manage_at_dte: Optional[int] = int(manage_at_dte) if manage_at_dte is not None else None
         self.roll_to_range: Tuple[int, int] = _parse_range(roll_policy.get("roll_to_dte_tuple") or roll_policy.get("roll_to_dte"), self.target_dte)
         delta_retarget = roll_policy.get("delta_retarget_tuple") or {}
-        put_retarget = delta_retarget.get("put", self.short_delta)
-        call_retarget = delta_retarget.get("call", self.short_call_delta)
-        self.roll_delta_range_put: Tuple[float, float] = tuple(put_retarget)  # type: ignore
-        self.roll_delta_range_call: Tuple[float, float] = tuple(call_retarget)  # type: ignore
+        put_retarget = delta_retarget.get("put")
+        call_retarget = delta_retarget.get("call")
+        self.roll_delta_range_put: Tuple[float, float] = _coerce_range(put_retarget, self.short_delta)
+        self.roll_delta_range_call: Tuple[float, float] = _coerce_range(call_retarget, self.short_call_delta)
 
         wing_policy = config.get("wing_policy", {}) or {}
         self.wing_enabled: bool = bool(wing_policy.get("enabled", False))
@@ -162,7 +161,7 @@ class StrategyRuntime:
         self.execution_price_offset_bps: int = int(execution_cfg.get("price_offset_bps", 5))
 
         tolerances = config.get("tolerances", {}) or {}
-        self.delta_snap: float = float(tolerances.get("delta_snap", 0.01))
+        self.delta_snap: float = _coerce_float(tolerances.get("delta_snap"), 0.01)
         max_delta_hi = max(abs(self.short_delta[1]), abs(self.short_call_delta[1]))
         self.delta_roll_trigger: float = max_delta_hi + self.delta_snap
         self.delta_force_exit: float = self.delta_roll_trigger + self.delta_snap
@@ -292,114 +291,79 @@ class StrategyRuntime:
                 reason = None
                 roll_candidate = None
                 chain_rec = self.active_chains.get(sym)
-                min_dte = metrics.get("min_dte")
-                short_delta = metrics.get("short_leg_delta_abs")
-                threatened = short_delta is not None and short_delta >= self.delta_roll_trigger
-                force_exit_delta = short_delta is not None and short_delta >= self.delta_force_exit
-                hard_exit = min_dte is not None and min_dte <= self.hard_exit_dte
-                take_profit_hit = (
-                    self.take_profit_threshold is not None
-                    and metrics["profit_pct"] is not None
-                    and metrics["profit_pct"] >= self.take_profit_threshold
+                decision = decide_exit_and_manage(
+                    position.kind,
+                    metrics,
+                    self.hard_exit_dte,
+                    self.take_profit_threshold,
+                    self.stop_loss_multiple,
+                    self.manage_at_dte,
+                    self.delta_roll_trigger,
+                    self.delta_force_exit,
                 )
-                stop_loss_hit = (
-                    self.stop_loss_multiple is not None
-                    and metrics["profit_pct"] is not None
-                    and metrics["profit_pct"] <= -self.stop_loss_multiple
-                )
-
-                if hard_exit:
-                    action = "EXIT"
-                    reason = "hard_exit_dte"
-                elif take_profit_hit:
-                    action = "EXIT"
-                    reason = "take_profit"
-                elif stop_loss_hit:
-                    action = "EXIT"
-                    reason = "stop_loss"
-                elif force_exit_delta:
-                    action = "EXIT"
-                    reason = "delta_force_exit"
+                action = decision["action"]
+                reason = decision["reason"]
+                in_manage = decision["in_manage"]
+                manage_reason = decision["manage_reason"]
+                if reason == "delta_force_exit":
                     self.summary["forced_exits"] += 1
-                else:
-                    in_manage = False
-                    manage_reason = None
-                    if self.manage_at_dte is not None and min_dte is not None and min_dte <= self.manage_at_dte:
-                        in_manage = True
-                        manage_reason = "dte_manage_window"
-                    if threatened:
-                        in_manage = True
-                        if not manage_reason:
-                            manage_reason = "delta_threat"
-                    if in_manage:
-                        self._mark_manage_window(position, date_str, metrics, manage_reason or "manage_window")
-                        if self._maybe_add_wing(position, sym, session_date, date_str, metrics):
-                            continue
-                        delta_range = self._delta_range_for_kind(position.kind, for_roll=True)
-                        roll_candidates = self._fetch_candidates(
-                            position.kind,
-                            sym,
-                            session_date,
-                            self.roll_to_range,
-                            delta_range,
-                            top_k=3,
-                        )
-                        short_targets = [leg.target_id for leg in position.legs if leg.side == "short"]
-                        primary_short = short_targets[0] if short_targets else None
-                        if position.kind == "CSP":
-                            roll_candidates = [cand for cand in roll_candidates if cand.info.get("target_id") != primary_short]
-                        elif position.kind == "IC":
-                            roll_candidates = [
-                                cand
-                                for cand in roll_candidates
-                                if cand.info.get("short_put_id") not in short_targets
-                                and cand.info.get("short_call_id") not in short_targets
-                            ]
-                        else:
-                            roll_candidates = [
-                                cand for cand in roll_candidates if cand.info.get("short_target_id") != primary_short
-                            ]
-                        self._record_roll_attempt(
-                            sym,
-                            date_str,
-                            manage_reason or "manage_window",
-                            len(roll_candidates),
-                            {"short_leg_delta": short_delta, "min_dte": min_dte},
-                        )
-                        if roll_candidates:
-                            candidate = roll_candidates[0]
-                            if self._prepare_candidate_execution(candidate.kind, candidate.info, sym, date_str, "ROLL"):
-                                roll_candidate = candidate
-                                action = "ROLL"
-                                reason = manage_reason or "roll_candidate"
-                            elif self.liquidity_fallback_exit:
-                                action = "EXIT"
-                                reason = "roll_guard_reject"
-                            else:
-                                continue
+
+                if action is None and in_manage:
+                    self._mark_manage_window(position, date_str, metrics, manage_reason or "manage_window")
+                    if self._maybe_add_wing(position, sym, session_date, date_str, metrics):
+                        continue
+                    delta_range = self._delta_range_for_kind(position.kind, for_roll=True)
+                    roll_candidates = self._fetch_candidates(
+                        position.kind,
+                        sym,
+                        session_date,
+                        self.roll_to_range,
+                        delta_range,
+                        top_k=3,
+                    )
+                    short_targets = [leg.target_id for leg in position.legs if leg.side == "short"]
+                    roll_candidates = filter_roll_candidates(position.kind, roll_candidates, short_targets)
+                    self._record_roll_attempt(
+                        sym,
+                        date_str,
+                        manage_reason or "manage_window",
+                        len(roll_candidates),
+                        {"short_leg_delta": metrics.get("short_leg_delta_abs"), "min_dte": metrics.get("min_dte")},
+                    )
+                    if roll_candidates:
+                        candidate = roll_candidates[0]
+                        if self._prepare_candidate_execution(candidate.kind, candidate.info, sym, date_str, "ROLL"):
+                            roll_candidate = candidate
+                            action = "ROLL"
+                            reason = manage_reason or "roll_candidate"
                         elif self.liquidity_fallback_exit:
-                            if chain_rec:
-                                self._log_chain_event(
-                                    chain_rec,
-                                    date_str,
-                                    "ROLL_SKIPPED",
-                                    "no_candidates",
-                                    {"min_dte": min_dte, "short_leg_delta": short_delta},
-                                )
-                            self.summary["roll_failures"] += 1
                             action = "EXIT"
-                            reason = "manage_window_no_roll"
+                            reason = "roll_guard_reject"
                         else:
-                            if chain_rec:
-                                self._log_chain_event(
-                                    chain_rec,
-                                    date_str,
-                                    "ROLL_SKIPPED",
-                                    "no_candidates",
-                                    {"min_dte": min_dte, "short_leg_delta": short_delta},
-                                )
-                            self.summary["roll_failures"] += 1
                             continue
+                    elif self.liquidity_fallback_exit:
+                        if chain_rec:
+                            self._log_chain_event(
+                                chain_rec,
+                                date_str,
+                                "ROLL_SKIPPED",
+                                "no_candidates",
+                                {"min_dte": metrics.get("min_dte"), "short_leg_delta": metrics.get("short_leg_delta_abs")},
+                            )
+                        self.summary["roll_failures"] += 1
+                        action = "EXIT"
+                        reason = "manage_window_no_roll"
+                    else:
+                        if chain_rec:
+                            self._log_chain_event(
+                                chain_rec,
+                                date_str,
+                                "ROLL_SKIPPED",
+                                "no_candidates",
+                                {"min_dte": metrics.get("min_dte"), "short_leg_delta": metrics.get("short_leg_delta_abs")},
+                            )
+                        self.summary["roll_failures"] += 1
+                        continue
 
                 if action == "EXIT":
                     self._handle_exit(position, sym, date_str, metrics, reason, quotes)
@@ -475,7 +439,7 @@ class StrategyRuntime:
                 "symbol": symbol,
                 "position_id": new_position.position_id,
                 "kind": picked.kind,
-                "kind_label": display_name(picked.kind),
+                "kind_label": kind_label(picked.kind),
                 "entry_credit": entry_credit,
             },
         )
@@ -624,7 +588,7 @@ class StrategyRuntime:
             extra={
                 "date": date_str,
                 "symbol": symbol,
-                "kind": display_name(new_position.kind),
+                "kind": kind_label(new_position.kind),
                 "position_id": position.position_id,
                 "new_position_id": new_position.position_id,
                 "pnl": metrics["pnl"],
@@ -633,117 +597,11 @@ class StrategyRuntime:
 
     def _create_position(self, symbol: str, kind: str, info: Dict[str, Any], entry_date: date, chain_id: str) -> PositionState:
         position_id = str(uuid.uuid4())
-        legs: List[LegPosition] = []
-        if kind == "CSP":
-            expiry = date.fromisoformat(info["expiry"]) if isinstance(info.get("expiry"), str) else entry_date
-            legs.append(
-                LegPosition(
-                    target_id=int(info["target_id"]),
-                    side="short",
-                    quantity=1,
-                    entry_mid=float(info.get("fill_mid", info["mid"])),
-                    entry_mark=float(info.get("fill_mark") or info.get("mark") or info["mid"]),
-                    multiplier=int(info.get("multiplier", 100)),
-                    expiry=expiry,
-                    strike=float(info["strike"]),
-                    right=str(info.get("right", "put")),
-                )
-            )
-        elif kind == "IC":
-            expiry = date.fromisoformat(info["expiry"]) if isinstance(info.get("expiry"), str) else entry_date
-            multiplier = int(info.get("multiplier", 100))
-            legs.append(
-                LegPosition(
-                    target_id=int(info["short_put_id"]),
-                    side="short",
-                    quantity=1,
-                    entry_mid=float(info.get("short_put_fill", info.get("short_put_mid", 0.0))),
-                    entry_mark=float(info.get("short_put_fill", info.get("short_put_mark", 0.0))),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["short_put_strike"]),
-                    right="put",
-                )
-            )
-            legs.append(
-                LegPosition(
-                    target_id=int(info["long_put_id"]),
-                    side="long",
-                    quantity=1,
-                    entry_mid=float(info.get("long_put_fill", info.get("long_put_mid", 0.0))),
-                    entry_mark=float(info.get("long_put_fill", info.get("long_put_mark", 0.0))),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["long_put_strike"]),
-                    right="put",
-                )
-            )
-            legs.append(
-                LegPosition(
-                    target_id=int(info["short_call_id"]),
-                    side="short",
-                    quantity=1,
-                    entry_mid=float(info.get("short_call_fill", info.get("short_call_mid", 0.0))),
-                    entry_mark=float(info.get("short_call_fill", info.get("short_call_mark", 0.0))),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["short_call_strike"]),
-                    right="call",
-                )
-            )
-            legs.append(
-                LegPosition(
-                    target_id=int(info["long_call_id"]),
-                    side="long",
-                    quantity=1,
-                    entry_mid=float(info.get("long_call_fill", info.get("long_call_mid", 0.0))),
-                    entry_mark=float(info.get("long_call_fill", info.get("long_call_mark", 0.0))),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["long_call_strike"]),
-                    right="call",
-                )
-            )
-        else:
-            expiry = date.fromisoformat(info["expiry"]) if isinstance(info.get("expiry"), str) else entry_date
-            multiplier = int(info.get("multiplier", 100))
-            short_right = str(info.get("short_right", "put"))
-            long_right = str(info.get("long_right", "put"))
-            legs.append(
-                LegPosition(
-                    target_id=int(info["short_target_id"]),
-                    side="short",
-                    quantity=1,
-                    entry_mid=float(info.get("short_fill_mid", info["short_mid"])),
-                    entry_mark=float(info.get("short_fill_mark") or info.get("short_mark") or info["short_mid"]),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["short_strike"]),
-                    right=short_right,
-                )
-            )
-            legs.append(
-                LegPosition(
-                    target_id=int(info["long_target_id"]),
-                    side="long",
-                    quantity=1,
-                    entry_mid=float(info.get("long_fill_mid", info["long_mid"])),
-                    entry_mark=float(info.get("long_fill_mark") or info.get("long_mark") or info["long_mid"]),
-                    multiplier=multiplier,
-                    expiry=expiry,
-                    strike=float(info["long_strike"]),
-                    right=long_right,
-                )
-            )
-        return PositionState(
-            position_id=position_id,
-            chain_id=chain_id,
-            symbol=symbol,
-            kind=kind,
-            entry_date=entry_date,
-            legs=legs,
-            entry_info=info,
-        )
+        info = dict(info)
+        info["position_id"] = position_id
+        pos = build_position(kind, info, entry_date, chain_id, symbol)
+        pos.position_id = position_id
+        return pos
 
     def _get_chain(self, symbol: str, kind: str) -> Dict[str, Any]:
         existing = self.active_chains.get(symbol)
@@ -829,7 +687,7 @@ class StrategyRuntime:
         date_str: str,
         metrics: Dict[str, Any],
     ) -> bool:
-        if not self.wing_enabled or position.kind != "CSP":
+        if not self.wing_enabled or not can_add_wing(position.kind):
             return False
         if any(leg.side == "long" for leg in position.legs):
             return False
@@ -1126,66 +984,10 @@ class StrategyRuntime:
                     return False, f"{prefix}_spread"
             return True, None
 
-        if kind == "CSP":
-            ok, reason = _leg_ok(
-                "short",
-                info.get("mark") or info.get("mid"),
-                info.get("bid"),
-                info.get("ask"),
-                info.get("oi"),
-                info.get("volume"),
-            )
-            return ok, reason
-        if kind == "IC":
-            legs = [
-                ("short_put", info.get("short_put_mark") or info.get("short_put_mid"), info.get("short_put_bid"), info.get("short_put_ask"), info.get("short_put_oi"), info.get("short_put_volume")),
-                ("long_put", info.get("long_put_mark") or info.get("long_put_mid"), info.get("long_put_bid"), info.get("long_put_ask"), info.get("long_put_oi"), info.get("long_put_volume")),
-                ("short_call", info.get("short_call_mark") or info.get("short_call_mid"), info.get("short_call_bid"), info.get("short_call_ask"), info.get("short_call_oi"), info.get("short_call_volume")),
-                ("long_call", info.get("long_call_mark") or info.get("long_call_mid"), info.get("long_call_bid"), info.get("long_call_ask"), info.get("long_call_oi"), info.get("long_call_volume")),
-            ]
-            for prefix, mark, bid, ask, oi, vol in legs:
-                ok, reason = _leg_ok(prefix, mark, bid, ask, oi, vol)
-                if not ok:
-                    return False, reason
-            return True, None
-        else:
-            short_ok, short_reason = _leg_ok(
-                "short",
-                info.get("short_mark") or info.get("short_mid"),
-                info.get("short_bid"),
-                info.get("short_ask"),
-                info.get("short_oi"),
-                info.get("short_volume"),
-            )
-            if not short_ok:
-                return False, short_reason
-            long_ok, long_reason = _leg_ok(
-                "long",
-                info.get("long_mark") or info.get("long_mid"),
-                info.get("long_bid"),
-                info.get("long_ask"),
-                info.get("long_oi"),
-                info.get("long_volume"),
-            )
-            return long_ok, long_reason
+        return check_fill_guard(kind, info, FillGuardRules(max_spread_pct=max_spread_pct, min_oi=min_oi, min_volume=min_volume))
 
     def _apply_fill_prices(self, kind: str, info: Dict[str, Any]) -> None:
-        if kind == "CSP":
-            fill = self._price_with_preference("short", info.get("mid", 0.0), info.get("bid"), info.get("ask"))
-            info["fill_mid"] = fill
-            info["fill_mark"] = fill
-        elif kind == "IC":
-            info["short_put_fill"] = self._price_with_preference("short", info.get("short_put_mid", 0.0), info.get("short_put_bid"), info.get("short_put_ask"))
-            info["long_put_fill"] = self._price_with_preference("long", info.get("long_put_mid", 0.0), info.get("long_put_bid"), info.get("long_put_ask"))
-            info["short_call_fill"] = self._price_with_preference("short", info.get("short_call_mid", 0.0), info.get("short_call_bid"), info.get("short_call_ask"))
-            info["long_call_fill"] = self._price_with_preference("long", info.get("long_call_mid", 0.0), info.get("long_call_bid"), info.get("long_call_ask"))
-        else:
-            short_fill = self._price_with_preference("short", info.get("short_mid", 0.0), info.get("short_bid"), info.get("short_ask"))
-            long_fill = self._price_with_preference("long", info.get("long_mid", 0.0), info.get("long_bid"), info.get("long_ask"))
-            info["short_fill_mid"] = short_fill
-            info["short_fill_mark"] = short_fill
-            info["long_fill_mid"] = long_fill
-            info["long_fill_mark"] = long_fill
+        apply_fill_prices(kind, info, self._price_with_preference)
 
     def _log_execution_reject(self, symbol: str, date_str: str, context: str, reason: str, info: Dict[str, Any]) -> None:
         logger.info(
@@ -1309,7 +1111,7 @@ class StrategyRuntime:
                 "net_pnl": self.summary.get("net_pnl"),
                 "entries": self.summary["entries"],
                 "exits": self.summary["exits"],
-                "kinds": [display_name(k) for k in self.strategy_kinds],
+                "kinds": [kind_label(k) for k in self.strategy_kinds],
             },
         )
 

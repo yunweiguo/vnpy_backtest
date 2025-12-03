@@ -25,7 +25,7 @@
 - ⏳ 进行中：
   - 数据链诊断深化（IV/Δ 缺失率、放宽日志）
   - 引入 option_stat、IVR 过滤与更多策略模板
-  - 多策略扩展阶段 1：Short/Long Call Vertical、Iron Condor selector/runtime（`selector.kinds`、call delta、示例配置）
+  - 多策略扩展阶段 1：Short/Long Call Vertical、Iron Condor selector/runtime（`selector.kinds`、call delta、示例配置），IC 示例配置与注册表/单测已完成
 - ⚠️ 风险/阻碍：
   - pip 官方包依赖 `typing.TYPE_CHECKING` 为 True 的兼容性问题（已通过 `.venv` patch 解决）
   - 生产数据源的权限与覆盖范围待确认

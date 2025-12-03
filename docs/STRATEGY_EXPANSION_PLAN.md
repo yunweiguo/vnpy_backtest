@@ -23,6 +23,7 @@
 
 ### 阶段 2 – 策略接口/注册表
 - 已落地：`core/strategy/registry.py` 提供 `SelectorSpec/registry`，`core/strategy/selectors/` 下拆分 puts/calls/condor 选择器并在 `__init__.py` 注册 `CSP`（Cash-Secured Put）、`SPV`（Short Put Vertical）、`SCV`（Short Call Vertical）、`LCV`（Long Call Vertical）、`IC`（Iron Condor），`StrategyRuntime` 通过注册表读取，旧逻辑保留为兜底。
+- 已补充：`core/strategy/strategies.py` 承载共用的策略建仓、fill guard、填价与 roll 过滤工具；Iron Condor 示例配置与 selector/单测已落地。
 - 待完善：整理 `StrategySpec`/滚动规则接口，剥离 roll/wing 等逻辑为可插拔组件；positions 侧需引入多腿模板（标的腿/数量）。
 
 ### 阶段 3 – 配置 & API
