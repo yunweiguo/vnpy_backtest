@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Header, Query
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from redis import Redis
 from rq import Queue
@@ -14,7 +16,8 @@ from rq import Queue
 from settings import Settings, load_settings
 from core.utils.timezone import tz_for_market
 from core.data.provider import DataProviderConfig, MySQLProvider, LiquidityGate
-from core.strategy.selector_csp_spv import csp_candidates, spv_candidates
+from core.strategy.selector_csp_spv import csp_candidates, spv_candidates, scv_candidates, lcv_candidates
+from core.strategy.selectors.condor import ic_candidates
 from core.logging_config import configure_logging, get_logger
 from datetime import date as _date
 
@@ -24,6 +27,15 @@ configure_logging(_settings.log_level, _settings.log_file, _settings.log_console
 logger = get_logger(__name__)
 
 app = FastAPI(title="Options Backtest API", version="v1")
+
+# CORS: allow local dev frontends
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class StrategyMeta(BaseModel):
@@ -311,6 +323,20 @@ def list_artifacts(run_id: str):
     return {"run_id": run_id, "artifacts": sorted(files)}
 
 
+@app.get("/backtests/{run_id}/artifacts/{filename}")
+def get_artifact_file(run_id: str, filename: str):
+    settings = load_settings()
+    run_dir = os.path.join(settings.artifacts_root, run_id)
+    if not os.path.exists(run_dir):
+        raise HTTPException(status_code=404, detail="run_id not found")
+    target = os.path.abspath(os.path.join(run_dir, filename))
+    if not target.startswith(os.path.abspath(run_dir)):
+        raise HTTPException(status_code=400, detail="invalid path")
+    if not os.path.exists(target):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(target)
+
+
 @app.post("/backtests/{run_id}/cancel")
 def cancel_backtest(run_id: str):
     settings = load_settings()
@@ -369,6 +395,10 @@ def resolve_profile(body: Dict[str, Any]):
         base["selector"]["short_delta"] = "0.16-0.22"
     elif preset == "aggressive":
         base["selector"]["short_delta"] = "0.22-0.30"
+    elif preset == "call_verticals":
+        base["selector"].update({"short_call_delta": "0.22-0.32", "kinds": ["SCV", "LCV"], "min_credit_of_width": 0.30})
+    elif preset == "iron_condor":
+        base["selector"].update({"short_delta": "0.18-0.28", "kinds": ["IC"], "min_credit_of_width": 0.30})
     # dot-notation overrides
     for k, v in overrides.items():
         cur = base
@@ -401,6 +431,7 @@ def diagnostics_option_chain(
     min_volume: int = 100,
     max_spread_pct: float = 0.08,
     top_k: int = 3,
+    kinds: Optional[List[str]] = Query(default=None, description="策略列表，如 CSP,SPV,SCV,LCV,IC，默认 CSP+SPV"),
 ):
     """诊断：
     - 检查四路数据库连接状态
@@ -459,9 +490,20 @@ def diagnostics_option_chain(
     }
 
     # 候选（Top-K）
-    csp_top = [c.__dict__ for c in csp_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), gate, top_k=top_k)]
+    selector_kinds = kinds or ["CSP", "SPV"]
+    selector_kinds = [k.upper() for k in selector_kinds]
     width_min, width_max = 2, 8
-    spv_top = [c.__dict__ for c in spv_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), (width_min, width_max), 0.33, gate, top_k=top_k)]
+    csp_top = spv_top = scv_top = lcv_top = ic_top = []
+    if "CSP" in selector_kinds:
+        csp_top = [c.__dict__ for c in csp_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), gate, top_k=top_k)]
+    if "SPV" in selector_kinds:
+        spv_top = [c.__dict__ for c in spv_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), (width_min, width_max), 0.33, gate, top_k=top_k)]
+    if "SCV" in selector_kinds:
+        scv_top = [c.__dict__ for c in scv_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), (width_min, width_max), 0.30, gate, top_k=top_k)]
+    if "LCV" in selector_kinds:
+        lcv_top = [c.__dict__ for c in lcv_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), (width_min, width_max), 0.55, gate, top_k=top_k)]
+    if "IC" in selector_kinds:
+        ic_top = [c.__dict__ for c in ic_candidates(provider, symbol, sdate, market, (dte_min, dte_max), (delta_lo, delta_hi), (width_min, width_max), 0.30, gate, top_k=top_k)]
 
     return {
         "connectivity": conn,
@@ -472,9 +514,13 @@ def diagnostics_option_chain(
             "dte_window": [dte_min, dte_max],
             "delta_range": [delta_lo, delta_hi],
             "liquidity": gate.__dict__,
+            "kinds": selector_kinds,
         },
         "chain_raw": raw_stats,
         "chain_filtered": filt_stats,
         "csp_top": csp_top,
         "spv_top": spv_top,
+        "scv_top": scv_top,
+        "lcv_top": lcv_top,
+        "ic_top": ic_top,
     }

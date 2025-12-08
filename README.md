@@ -40,6 +40,12 @@
    ```
 2. 启动 API：`uvicorn api.main:app --reload --port 8000`
 3. 启动 Worker：`rq worker --url <redis连接串> backtest`
+4. 启动前端调试台（Vite/React，默认指向 http://127.0.0.1:8000）：
+   ```bash
+   cd frontend
+   npm install    # 或 pnpm install
+   npm run dev    # 浏览器访问 http://localhost:5173
+   ```
 
 CLI
 
@@ -109,6 +115,7 @@ API 概览
   python scripts/run_api_smoke.py --config examples/config_csp_spv_us.json --base http://127.0.0.1:8000
   ```
   需要先启动 API 与 Worker。脚本会依次调用 health/validate/backtests/status/artifacts，超时或失败会返回非零退出码。
+ - 前端调试台：启动 API 后运行 `npm run dev`（见上方启动步骤），可在浏览器端加载预设/编辑配置/调用诊断与回测。
 
 说明
 

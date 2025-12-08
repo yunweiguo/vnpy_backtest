@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 artifacts/
 .idea
+/.claude/settings.local.json
+/frontend/node_modules/

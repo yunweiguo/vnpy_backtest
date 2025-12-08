@@ -171,7 +171,7 @@ class StrategyRuntime:
         self.debug_log_market_limit: int = int(debug_cfg.get("log_market_data_limit", 10))
         self.debug_dump_market_csv: bool = bool(debug_cfg.get("dump_market_data_csv", False))
 
-        bt = config.get("backtest", {})
+        bt = config.get("backtest") or {}
         start_s = bt.get("start")
         end_s = bt.get("end")
         if start_s and end_s:
@@ -186,7 +186,7 @@ class StrategyRuntime:
 
     @staticmethod
     def generate_session_dates(config: Dict[str, Any]) -> List[date]:
-        bt = config.get("backtest", {})
+        bt = config.get("backtest") or {}
         start_s = bt.get("start")
         end_s = bt.get("end")
         if start_s and end_s:

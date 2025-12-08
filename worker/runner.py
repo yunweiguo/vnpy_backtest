@@ -5,6 +5,10 @@ import os
 import traceback
 from typing import Any, Dict
 
+# macOS fork safety for ObjC-linked libs (e.g., matplotlib/Qt)
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 from settings import load_settings
 from core.engine.artifacts import ensure_dir
 from core.logging_config import configure_logging, get_logger
